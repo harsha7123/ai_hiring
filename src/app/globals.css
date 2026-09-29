@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+/* Neutral, print-friendly palette. One ink colour for emphasis; status colours are muted. */
+@theme {
+  --color-canvas: #f7f7f5;
+  --color-surface: #ffffff;
+  --color-sunken: #f1f0ed;
+  --color-ink: #141413;
+  --color-ink-2: #4b4a46;
+  --color-ink-3: #85847e;
+  --color-line: #e7e6e2;
+  --color-line-2: #d5d4ce;
+  --color-good: #1f6b46;
+  --color-good-bg: #ebf3ee;
+  --color-warn: #8a5a00;
+  --color-warn-bg: #f7f0e1;
+  --color-bad: #a3302b;
+  --color-bad-bg: #f8ebea;
+  --color-info: #2d4a7a;
+  --color-info-bg: #ebeff6;
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  --radius-card: 14px;
+  --shadow-card: 0 1px 2px rgb(20 20 19 / 0.04), 0 1px 1px rgb(20 20 19 / 0.02);
+}
+
+html {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "cv11", "ss01";
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--color-canvas);
+}
+
+::selection {
+  background: #141413;
+  color: #fff;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 2px;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+@media print {
+  html,
+  body {
+    background: #fff;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-break {
+    break-inside: avoid;
+  }
+}

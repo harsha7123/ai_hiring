@@ -1,0 +1,5 @@
+# Local development test accounts (localhost only - never use in production)
+Organisation: Acme Test
+Owner:        owner@acme.test   / devpass-Acme-2026
+Second org:   Globex Test
+Owner:        owner@globex.test / devpass-Globex-2026
