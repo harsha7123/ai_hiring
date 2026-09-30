@@ -1,80 +1,87 @@
 import "server-only";
-import { cookies, headers } from "next/headers";
-import { and, eq, gt } from "drizzle-orm";
+import { headers } from "next/headers";
+import { desc, eq, and, isNull, gt } from "drizzle-orm";
+import type { User as SupabaseUser } from "@supabase/supabase-js";
 import { db, schema } from "@/db";
-import { randomToken, sha256 } from "@/lib/crypto";
-
-export const SESSION_COOKIE = "sl_session";
-const SESSION_DAYS = 7;
+import { supabaseServer } from "@/lib/supabase/server";
 
 export async function clientIp(): Promise<string | null> {
   const h = await headers();
   return h.get("x-forwarded-for")?.split(",")[0]?.trim() || h.get("x-real-ip") || null;
 }
 
-export async function createSession(userId: string, orgId: string) {
-  const token = randomToken();
-  const h = await headers();
-  const expiresAt = new Date(Date.now() + SESSION_DAYS * 864e5);
-  await db.insert(schema.sessions).values({
-    id: sha256(token),
-    userId,
-    orgId,
-    expiresAt,
-    ip: await clientIp(),
-    userAgent: h.get("user-agent")?.slice(0, 300) ?? null,
-  });
-  (await cookies()).set(SESSION_COOKIE, token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-    expires: expiresAt,
-  });
+/**
+ * Keeps our local profile row (used for joins/audit display) in sync with Supabase
+ * auth. Swallows a same-email/different-id conflict rather than 500ing every page
+ * load — that can only happen if a Supabase account was deleted and recreated with
+ * the same address, which needs a person to untangle, not a silent auto-merge.
+ */
+async function ensureUserProfile(user: SupabaseUser) {
+  const name = (user.user_metadata?.name as string | undefined)?.trim() || user.email?.split("@")[0] || "User";
+  try {
+    await db
+      .insert(schema.users)
+      .values({ id: user.id, email: user.email!, name, lastLoginAt: new Date() })
+      .onConflictDoUpdate({ target: schema.users.id, set: { email: user.email!, lastLoginAt: new Date() } });
+  } catch (err) {
+    console.error(`profile sync failed for ${user.id} <${user.email}>:`, err instanceof Error ? err.message : err);
+  }
 }
 
-export async function destroySession() {
-  const jar = await cookies();
-  const token = jar.get(SESSION_COOKIE)?.value;
-  if (token) await db.delete(schema.sessions).where(eq(schema.sessions.id, sha256(token)));
-  jar.delete(SESSION_COOKIE);
+/**
+ * Any invite sent to this email, created before or after they signed up, is
+ * attached the first time they're seen signed in with a matching address.
+ */
+async function consumePendingInvites(userId: string, email: string) {
+  const pending = await db
+    .select()
+    .from(schema.invites)
+    .where(and(eq(schema.invites.email, email), isNull(schema.invites.acceptedAt), gt(schema.invites.expiresAt, new Date())));
+  for (const invite of pending) {
+    await db.insert(schema.memberships).values({ userId, orgId: invite.orgId, role: invite.role }).onConflictDoNothing();
+    await db.update(schema.invites).set({ acceptedAt: new Date() }).where(eq(schema.invites.id, invite.id));
+  }
 }
 
 export async function readSession() {
-  const token = (await cookies()).get(SESSION_COOKIE)?.value;
-  if (!token) return null;
-  const rows = await db
+  const supabase = await supabaseServer();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user?.email) return null;
+
+  await ensureUserProfile(user);
+  await consumePendingInvites(user.id, user.email);
+
+  const memberships = await db
     .select({
-      sessionId: schema.sessions.id,
-      expiresAt: schema.sessions.expiresAt,
-      user: { id: schema.users.id, email: schema.users.email, name: schema.users.name },
-      org: { id: schema.organizations.id, name: schema.organizations.name },
       role: schema.memberships.role,
+      org: { id: schema.organizations.id, name: schema.organizations.name },
     })
-    .from(schema.sessions)
-    .innerJoin(schema.users, eq(schema.users.id, schema.sessions.userId))
-    .innerJoin(schema.organizations, eq(schema.organizations.id, schema.sessions.orgId))
-    // Membership must still exist: removing a member revokes access immediately.
-    .innerJoin(
-      schema.memberships,
-      and(eq(schema.memberships.userId, schema.sessions.userId), eq(schema.memberships.orgId, schema.sessions.orgId)),
-    )
-    .where(and(eq(schema.sessions.id, sha256(token)), gt(schema.sessions.expiresAt, new Date())))
-    .limit(1);
-  const s = rows[0];
-  if (!s) return null;
-  // Sliding expiry: extend in the DB when less than half the lifetime remains.
-  if (s.expiresAt.getTime() - Date.now() < (SESSION_DAYS / 2) * 864e5) {
-    await db
-      .update(schema.sessions)
-      .set({ expiresAt: new Date(Date.now() + SESSION_DAYS * 864e5) })
-      .where(eq(schema.sessions.id, s.sessionId));
-  }
-  return s;
+    .from(schema.memberships)
+    .innerJoin(schema.organizations, eq(schema.organizations.id, schema.memberships.orgId))
+    .where(eq(schema.memberships.userId, user.id))
+    .orderBy(desc(schema.memberships.createdAt));
+  if (!memberships.length) return null;
+
+  const [pref] = await db.select().from(schema.activeOrgPrefs).where(eq(schema.activeOrgPrefs.userId, user.id));
+  const active = memberships.find((m) => m.org.id === pref?.orgId) ?? memberships[0];
+
+  return {
+    user: { id: user.id, email: user.email, name: (user.user_metadata?.name as string | undefined) || user.email.split("@")[0] },
+    org: active.org,
+    role: active.role,
+  };
 }
 
-export async function switchSessionOrg(orgId: string) {
-  const token = (await cookies()).get(SESSION_COOKIE)?.value;
-  if (!token) return;
-  await db.update(schema.sessions).set({ orgId }).where(eq(schema.sessions.id, sha256(token)));
+export async function destroySession() {
+  const supabase = await supabaseServer();
+  await supabase.auth.signOut();
+}
+
+export async function switchSessionOrg(userId: string, orgId: string) {
+  await db
+    .insert(schema.activeOrgPrefs)
+    .values({ userId, orgId })
+    .onConflictDoUpdate({ target: schema.activeOrgPrefs.userId, set: { orgId, updatedAt: new Date() } });
 }

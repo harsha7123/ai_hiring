@@ -2,7 +2,7 @@
 
 Multi-tenant web app that implements the proposal end to end:
 
-1. **Setup** — recruiter pastes a JD; Claude extracts a requirement spec that the recruiter edits and confirms. Knockouts, weights, custom questions, shortlist size, interview pool and a hard call spend cap are set per role.
+1. **Setup** — recruiter pastes a JD; the AI model extracts a requirement spec that the recruiter edits and confirms. Knockouts, weights, custom questions, shortlist size, interview pool and a hard call spend cap are set per role.
 2. **Stage 1: CV ranking** — bulk upload (PDF, DOCX, TXT, scanned images with OCR fallback). Every CV is structured, passed through a fast keyword pass, then scored on a fixed rubric. Every sub-score keeps only evidence quotes that are verified to exist in the CV.
 3. **Stage 2: consent and scheduling** — top N candidates get an SMS/WhatsApp invite (Twilio, optional) to a consent page where they book a slot, take the call now, or ask for a human. Unanswered invites are re-sent up to 3 times, then the candidate is marked unreachable.
 4. **Stage 3: AI voice interview** — calls go out through **OmniDimension** with per-candidate questions generated from the gap between their CV and the JD. The agent discloses it is an AI and that the call is recorded. No-answers retry up to 3 times at different times of day, within calling hours.
@@ -14,15 +14,15 @@ The platform ranks and recommends; it never rejects. Recruiters can promote or r
 ## Stack
 
 - **Next.js 16** (App Router, server actions): UI and API in one service
-- **PostgreSQL** via Drizzle ORM: all data, including CV files and a durable job queue (`FOR UPDATE SKIP LOCKED`)
-- **Claude** (`@anthropic-ai/sdk`, structured outputs): fast tier `claude-haiku-4-5` for CV parsing and scoring, smart tier `claude-opus-5` for questions, interview scoring and reports
+- **Supabase Auth**: sign-up, sign-in and session cookies. The app keeps its own `users`/`memberships`/`organizations` tables (via Drizzle, in your own Postgres) keyed by the Supabase auth user id, for roles and multi-tenant data — Supabase itself only ever sees an email and password.
+- **PostgreSQL** via Drizzle ORM: all app data, including CV files and a durable job queue (`FOR UPDATE SKIP LOCKED`). This can be the same Postgres database Supabase gives your project, or any Postgres 14+.
+- **OpenAI** (Responses API, structured outputs): fast tier `gpt-5-mini` for CV parsing and scoring, smart tier `gpt-5` for questions, interview scoring and reports
 - **OmniDimension** REST API: voice agent, outbound calls, call logs and post-call webhook
 - Background worker and scheduler run in the web process by default, or as a separate process (`npm run worker`)
 
 ## Security
 
-- Passwords hashed with scrypt; constant-time comparison; login lockout after 5 failures per email (25 per IP) in 15 minutes
-- Sessions: random 256-bit tokens, stored as SHA-256 hashes, `httpOnly` + `Secure` + `SameSite=Lax` cookies, 7-day sliding expiry. Removing a member revokes their access immediately.
+- Authentication delegated to Supabase Auth (bcrypt password storage, session tokens, rate limiting all handled there) — this app never stores a password
 - Roles: owner, admin, recruiter, viewer, checked on every page, action and route
 - Tenant isolation: every query is scoped to the session's organisation. A cross-tenant test returns 404 on every route.
 - Per-tenant OmniDimension keys encrypted with AES-256-GCM (`APP_ENCRYPTION_KEY`)
@@ -34,15 +34,25 @@ The platform ranks and recommends; it never rejects. Recruiters can promote or r
 - Audit log of sign-ins, configuration changes, candidate decisions, consent, downloads and deletions
 - Retention: recordings (default 90 days) and candidate records (default 180 days) are purged automatically. Admins can hard-delete a candidate on request.
 
+## Setting up Supabase
+
+1. Create a project at [supabase.com](https://supabase.com) (any region; Mumbai/Singapore is closest to India).
+2. **Project Settings → API**: copy the **Project URL** into `NEXT_PUBLIC_SUPABASE_URL`, the **anon public** key into `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and the **service_role** key into `SUPABASE_SERVICE_ROLE_KEY` (keep this one server-only — never commit it or ship it to the browser).
+3. **Project Settings → Database**: copy the connection string (URI, transaction pooler) into `DATABASE_URL`, and set `DATABASE_SSL=true`. This is the same Postgres database the app's own tables (`organizations`, `positions`, `candidates`, …) live in — `npm run db:migrate` / the app's own startup migration creates them in the `public` schema alongside Supabase's `auth` schema.
+4. **Authentication → Providers → Email**: leave "Confirm email" **on** for a public-facing deployment (recommended), or turn it **off** for faster internal testing — sign-up works either way; with it on, new users see a "check your email" message and must click the confirmation link before their first sign-in.
+5. **Authentication → URL Configuration**: set the **Site URL** to your `APP_URL`.
+
+No Supabase client code runs in the browser — every call goes through this app's server actions, so nothing beyond the two public keys above needs to reach the client.
+
 ## Local development
 
 ```bash
 npm install
-cp .env.example .env.local        # fill DATABASE_URL, APP_ENCRYPTION_KEY; AI_DEMO_MODE=true to run without a key
+cp .env.example .env.local        # fill in DATABASE_URL, APP_ENCRYPTION_KEY, the Supabase keys; AI_DEMO_MODE=true to run without an OpenAI key
 npm run dev                       # migrations run automatically on boot
 ```
 
-`AI_DEMO_MODE=true` swaps Claude for deterministic heuristics so the whole pipeline can run offline. Use it only for testing.
+`AI_DEMO_MODE=true` swaps the AI model for deterministic heuristics so the whole CV/interview pipeline can run offline. Use it only for testing — it does not need `OPENAI_API_KEY` at all, but Supabase credentials are still required for sign-in.
 
 ## Connecting OmniDimension
 
@@ -55,13 +65,13 @@ Call results arrive by webhook and are also reconciled from `GET /calls/logs` ev
 
 ## Deployment
 
-The app is a single Docker image (`Dockerfile`) that serves the web app and runs the worker and scheduler. It needs PostgreSQL and the environment variables in `.env.example`.
+The app is a single Docker image (`Dockerfile`) that serves the web app and runs the worker and scheduler. It needs PostgreSQL (Supabase's own, or any other) and the environment variables in `.env.example`.
 
 | Option | When | Notes |
 | --- | --- | --- |
-| **Railway** | Fastest start | New project → Deploy from GitHub (uses the Dockerfile) → add PostgreSQL → set variables → add a custom domain. Choose the Singapore region. |
-| **DigitalOcean App Platform + Managed PostgreSQL (BLR1, Bengaluru)** | Simple, and data stays in India | Deploy the Dockerfile as a web service, attach a managed Postgres in the same region, set `DATABASE_SSL=true`. |
-| **AWS ap-south-1 (Mumbai): App Runner or ECS Fargate + RDS PostgreSQL** | Enterprise clients, DPDP residency, matches the proposal | Push the image to ECR, run on App Runner or ECS, use RDS with encryption at rest and Secrets Manager for env vars. |
+| **Railway** | Fastest start | New project → Deploy from GitHub (uses the Dockerfile) → set variables → add a custom domain. Choose the Singapore region. |
+| **DigitalOcean App Platform** | Simple, and data stays in India | Deploy the Dockerfile as a web service, point `DATABASE_URL` at your Supabase project (or a DO Managed Postgres in BLR1), set `DATABASE_SSL=true`. |
+| **AWS ap-south-1 (Mumbai): App Runner or ECS Fargate** | Enterprise clients, DPDP residency | Push the image to ECR, run on App Runner or ECS, keep secrets in Secrets Manager. |
 
 **Not recommended:** Vercel or other serverless-only hosts. They can't run the long-lived worker and scheduler, so you would need a separate always-on worker instance.
 

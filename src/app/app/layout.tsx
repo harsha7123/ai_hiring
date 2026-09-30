@@ -13,7 +13,7 @@ export default async function AppLayout({ children }: LayoutProps<"/app">) {
     .from(schema.memberships)
     .innerJoin(schema.organizations, eq(schema.organizations.id, schema.memberships.orgId))
     .where(eq(schema.memberships.userId, ctx.user.id));
-  const aiMissing = !isDemoMode() && !process.env.ANTHROPIC_API_KEY;
+  const aiMissing = !isDemoMode() && !process.env.OPENAI_API_KEY;
 
   return (
     <div className="min-h-screen">
@@ -57,12 +57,12 @@ export default async function AppLayout({ children }: LayoutProps<"/app">) {
       </header>
       {isDemoMode() && (
         <div className="no-print border-b border-line bg-warn-bg px-6 py-2 text-center text-xs text-warn">
-          Demo mode: scoring uses simple heuristics, not Claude. Set ANTHROPIC_API_KEY and AI_DEMO_MODE=false for production.
+          Demo mode: scoring uses simple heuristics, not the AI model. Set OPENAI_API_KEY and AI_DEMO_MODE=false for production.
         </div>
       )}
       {aiMissing && (
         <div className="no-print border-b border-line bg-bad-bg px-6 py-2 text-center text-xs text-bad">
-          ANTHROPIC_API_KEY is not configured. CV scoring and reports will fail until it is set.
+          OPENAI_API_KEY is not configured. CV scoring and reports will fail until it is set.
         </div>
       )}
       <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 sm:py-10">{children}</main>

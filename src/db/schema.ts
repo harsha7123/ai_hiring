@@ -76,11 +76,14 @@ export const organizations = pgTable("organizations", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Mirrors Supabase's auth.users: id is the Supabase auth user id (no default —
+// it is always set explicitly from the authenticated session), never a locally
+// generated one. Supabase owns credentials and sessions; this table just holds
+// the profile fields the app needs to join against organisations/roles.
 export const users = pgTable("users", {
-  id: uuid("id").primaryKey().defaultRandom(),
+  id: uuid("id").primaryKey(),
   email: text("email").notNull().unique(),
   name: text("name").notNull(),
-  passwordHash: text("password_hash").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
 });
@@ -96,19 +99,15 @@ export const memberships = pgTable(
   (t) => [primaryKey({ columns: [t.userId, t.orgId] })],
 );
 
-export const sessions = pgTable(
-  "sessions",
-  {
-    id: text("id").primaryKey(), // sha256 of the cookie token
-    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-    orgId: uuid("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    ip: text("ip"),
-    userAgent: text("user_agent"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [index("sessions_user_idx").on(t.userId)],
-);
+// Which organisation a signed-in user is currently viewing (a user can belong to
+// several). Supabase owns the actual session/cookie; this just remembers the
+// last-selected tenant per browser via a small first-party cookie, keyed here
+// only for the "switch organisation" picker default.
+export const activeOrgPrefs = pgTable("active_org_prefs", {
+  userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  orgId: uuid("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const invites = pgTable("invites", {
   id: uuid("id").primaryKey().defaultRandom(),

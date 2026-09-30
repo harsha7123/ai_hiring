@@ -408,9 +408,10 @@ export async function removeMember(fd: FormData) {
     .from(schema.memberships)
     .where(and(eq(schema.memberships.userId, userId), eq(schema.memberships.orgId, ctx.org.id)));
   if (!m || m.role === "owner" || (m.role === "admin" && ctx.role !== "owner")) return;
+  // Deleting the membership is enough: the next page load for that user finds this
+  // organisation missing from their list (see readSession), which revokes access to
+  // it immediately without touching their Supabase session or other workspaces.
   await db.delete(schema.memberships).where(and(eq(schema.memberships.userId, userId), eq(schema.memberships.orgId, ctx.org.id)));
-  // Revoke that user's sessions for this organisation immediately.
-  await db.delete(schema.sessions).where(and(eq(schema.sessions.userId, userId), eq(schema.sessions.orgId, ctx.org.id)));
   await audit({ orgId: ctx.org.id, userId: ctx.user.id, action: "member.removed", target: userId });
   refresh();
 }

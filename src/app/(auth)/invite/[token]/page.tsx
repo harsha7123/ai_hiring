@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import { db, schema } from "@/db";
 import { sha256 } from "@/lib/crypto";
 import { ActionForm, SubmitButton } from "@/components/client";
 import { Field, Input, Notice } from "@/components/ui";
-import { acceptInvite } from "../../actions";
+import { joinInvite } from "../../actions";
 
 export const metadata: Metadata = { title: "Join workspace" };
 
@@ -24,22 +25,28 @@ export default async function InvitePage({ params }: PageProps<"/invite/[token]"
       <p className="mt-1.5 text-sm text-ink-2">
         You were invited as <span className="font-medium text-ink">{row.invite.role}</span> ({row.invite.email}).
       </p>
-      <ActionForm action={acceptInvite} className="mt-8 space-y-4">
-        <input type="hidden" name="token" value={token} />
-        {!existing && (
+      {existing ? (
+        <div className="mt-8">
+          <Notice tone="info">
+            You already have an account with this email.{" "}
+            <Link href="/login" className="font-medium underline underline-offset-4">
+              Sign in
+            </Link>{" "}
+            and you&apos;ll be added to {row.orgName} automatically.
+          </Notice>
+        </div>
+      ) : (
+        <ActionForm action={joinInvite} className="mt-8 space-y-4">
+          <input type="hidden" name="token" value={token} />
           <Field label="Your name" htmlFor="name">
             <Input id="name" name="name" autoComplete="name" required />
           </Field>
-        )}
-        <Field
-          label={existing ? "Your existing password" : "Choose a password"}
-          htmlFor="password"
-          hint={existing ? "You already have an account; confirm it to join." : "At least 10 characters, with letters and a number."}
-        >
-          <Input id="password" name="password" type="password" autoComplete={existing ? "current-password" : "new-password"} required />
-        </Field>
-        <SubmitButton className="w-full">Join workspace</SubmitButton>
-      </ActionForm>
+          <Field label="Choose a password" htmlFor="password" hint="At least 10 characters, with letters and a number.">
+            <Input id="password" name="password" type="password" autoComplete="new-password" minLength={10} required />
+          </Field>
+          <SubmitButton className="w-full">Create account and join</SubmitButton>
+        </ActionForm>
+      )}
     </>
   );
 }

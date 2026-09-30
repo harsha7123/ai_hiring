@@ -42,19 +42,16 @@ export async function extractSpec(jd: string): Promise<RequirementSpec> {
 // ---------- OCR fallback for scanned CVs ----------
 
 export async function ocrDocument(buf: Buffer, mime: string): Promise<string> {
-  if (isDemoMode()) throw new Error("Scanned CVs need OCR, which requires a configured ANTHROPIC_API_KEY");
-  const data = buf.toString("base64");
+  if (isDemoMode()) throw new Error("Scanned CVs need OCR, which requires a configured OPENAI_API_KEY");
+  const dataUrl = `data:${mime};base64,${buf.toString("base64")}`;
   const block =
     mime === "application/pdf"
-      ? ({ type: "document", source: { type: "base64", media_type: "application/pdf", data } } as const)
-      : ({
-          type: "image",
-          source: { type: "base64", media_type: mime as "image/png" | "image/jpeg" | "image/webp", data },
-        } as const);
+      ? ({ type: "input_file", filename: "cv.pdf", file_data: dataUrl } as const)
+      : ({ type: "input_image", image_url: dataUrl, detail: "high" } as const);
   return plainText({
     tier: "fast",
     system: "You are an OCR engine. Transcribe every piece of text in the document verbatim, preserving line breaks. Output only the text.",
-    content: [block, { type: "text", text: "Transcribe this CV." }],
+    content: [block, { type: "input_text", text: "Transcribe this CV." }],
   });
 }
 

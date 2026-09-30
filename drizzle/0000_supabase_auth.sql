@@ -3,6 +3,12 @@ CREATE TYPE "public"."interview_status" AS ENUM('queued', 'dispatched', 'complet
 CREATE TYPE "public"."job_status" AS ENUM('pending', 'running', 'done', 'failed');--> statement-breakpoint
 CREATE TYPE "public"."member_role" AS ENUM('owner', 'admin', 'recruiter', 'viewer');--> statement-breakpoint
 CREATE TYPE "public"."position_status" AS ENUM('draft', 'screening', 'interviewing', 'completed', 'archived');--> statement-breakpoint
+CREATE TABLE "active_org_prefs" (
+	"user_id" uuid PRIMARY KEY NOT NULL,
+	"org_id" uuid NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "audit_logs" (
 	"id" bigserial PRIMARY KEY NOT NULL,
 	"org_id" uuid,
@@ -143,26 +149,17 @@ CREATE TABLE "reports" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "sessions" (
-	"id" text PRIMARY KEY NOT NULL,
-	"user_id" uuid NOT NULL,
-	"org_id" uuid NOT NULL,
-	"expires_at" timestamp with time zone NOT NULL,
-	"ip" text,
-	"user_agent" text,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
 CREATE TABLE "users" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"id" uuid PRIMARY KEY NOT NULL,
 	"email" text NOT NULL,
 	"name" text NOT NULL,
-	"password_hash" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"last_login_at" timestamp with time zone,
 	CONSTRAINT "users_email_unique" UNIQUE("email")
 );
 --> statement-breakpoint
+ALTER TABLE "active_org_prefs" ADD CONSTRAINT "active_org_prefs_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "active_org_prefs" ADD CONSTRAINT "active_org_prefs_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "audit_logs" ADD CONSTRAINT "audit_logs_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "audit_logs" ADD CONSTRAINT "audit_logs_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "candidates" ADD CONSTRAINT "candidates_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -179,8 +176,6 @@ ALTER TABLE "positions" ADD CONSTRAINT "positions_org_id_organizations_id_fk" FO
 ALTER TABLE "positions" ADD CONSTRAINT "positions_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "reports" ADD CONSTRAINT "reports_candidate_id_candidates_id_fk" FOREIGN KEY ("candidate_id") REFERENCES "public"."candidates"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "reports" ADD CONSTRAINT "reports_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "sessions" ADD CONSTRAINT "sessions_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "sessions" ADD CONSTRAINT "sessions_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "audit_org_idx" ON "audit_logs" USING btree ("org_id","created_at");--> statement-breakpoint
 CREATE INDEX "audit_action_idx" ON "audit_logs" USING btree ("action","created_at");--> statement-breakpoint
 CREATE INDEX "candidates_position_idx" ON "candidates" USING btree ("position_id","stage");--> statement-breakpoint
@@ -188,5 +183,4 @@ CREATE INDEX "candidates_org_idx" ON "candidates" USING btree ("org_id");--> sta
 CREATE INDEX "interviews_status_idx" ON "interviews" USING btree ("status","next_attempt_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "interviews_candidate_uq" ON "interviews" USING btree ("candidate_id");--> statement-breakpoint
 CREATE INDEX "jobs_pending_idx" ON "jobs" USING btree ("status","run_at");--> statement-breakpoint
-CREATE INDEX "positions_org_idx" ON "positions" USING btree ("org_id");--> statement-breakpoint
-CREATE INDEX "sessions_user_idx" ON "sessions" USING btree ("user_id");
+CREATE INDEX "positions_org_idx" ON "positions" USING btree ("org_id");

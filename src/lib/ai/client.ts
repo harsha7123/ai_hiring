@@ -1,5 +1,6 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import OpenAI from "openai";
+import { zodTextFormat } from "openai/helpers/zod";
+import type { ResponseInputContent } from "openai/resources/responses/responses";
 import type { z } from "zod";
 
 /**
@@ -7,61 +8,55 @@ import type { z } from "zod";
  * and a stronger model for question design, interview scoring and reports.
  */
 export const MODELS = {
-  fast: process.env.AI_MODEL_FAST || "claude-haiku-4-5",
-  smart: process.env.AI_MODEL_SMART || "claude-opus-5",
+  fast: process.env.AI_MODEL_FAST || "gpt-5-mini",
+  smart: process.env.AI_MODEL_SMART || "gpt-5",
 } as const;
 
 export const isDemoMode = () => process.env.AI_DEMO_MODE === "true";
 
 export class AiConfigError extends Error {}
 
-let client: Anthropic | null = null;
-function getClient(): Anthropic {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    throw new AiConfigError("ANTHROPIC_API_KEY is not configured");
+let client: OpenAI | null = null;
+function getClient(): OpenAI {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new AiConfigError("OPENAI_API_KEY is not configured");
   }
-  client ??= new Anthropic({ maxRetries: 4, timeout: 5 * 60_000 });
+  client ??= new OpenAI({ maxRetries: 4, timeout: 5 * 60_000 });
   return client;
 }
+
+export type Content = string | ResponseInputContent[];
 
 export async function structured<S extends z.ZodType>(opts: {
   tier: keyof typeof MODELS;
   system: string;
-  content: Anthropic.ContentBlockParam[] | string;
+  content: Content;
   schema: S;
   maxTokens?: number;
 }): Promise<{ data: z.infer<S>; model: string }> {
   const model = MODELS[opts.tier];
-  const res = await getClient().messages.parse({
+  const res = await getClient().responses.parse({
     model,
-    max_tokens: opts.maxTokens ?? 16000,
-    system: opts.system,
-    messages: [{ role: "user", content: opts.content }],
-    output_config: {
-      format: zodOutputFormat(opts.schema),
-      // Effort is not supported on Haiku; the fast tier runs at its default.
-      ...(opts.tier === "smart" ? { effort: "high" as const } : {}),
-    },
+    instructions: opts.system,
+    input: [{ role: "user", content: opts.content }],
+    max_output_tokens: opts.maxTokens ?? 16000,
+    text: { format: zodTextFormat(opts.schema, "result") },
   });
-  if (res.stop_reason === "refusal") {
-    throw new Error(`Model declined the request (${res.stop_details?.category ?? "unspecified"})`);
+  if (res.status === "incomplete") {
+    throw new Error(`Model output was incomplete (${res.incomplete_details?.reason ?? "unknown reason"})`);
   }
-  if (res.stop_reason === "max_tokens") throw new Error("Model output was truncated");
-  if (!res.parsed_output) throw new Error("Model returned output that did not match the schema");
-  return { data: res.parsed_output as z.infer<S>, model };
+  if (res.status !== "completed") throw new Error(`Model returned status "${res.status}"`);
+  if (res.output_parsed == null) throw new Error("Model returned output that did not match the schema");
+  return { data: res.output_parsed as z.infer<S>, model };
 }
 
-export async function plainText(opts: {
-  tier: keyof typeof MODELS;
-  system: string;
-  content: Anthropic.ContentBlockParam[];
-}): Promise<string> {
-  const res = await getClient().messages.create({
+export async function plainText(opts: { tier: keyof typeof MODELS; system: string; content: ResponseInputContent[] }): Promise<string> {
+  const res = await getClient().responses.create({
     model: MODELS[opts.tier],
-    max_tokens: 16000,
-    system: opts.system,
-    messages: [{ role: "user", content: opts.content }],
+    instructions: opts.system,
+    input: [{ role: "user", content: opts.content }],
+    max_output_tokens: 16000,
   });
-  if (res.stop_reason === "refusal") throw new Error("Model declined the request");
-  return res.content.map((b) => (b.type === "text" ? b.text : "")).join("");
+  if (res.status !== "completed") throw new Error(`Model returned status "${res.status}"`);
+  return res.output_text;
 }
