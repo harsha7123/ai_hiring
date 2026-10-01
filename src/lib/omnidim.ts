@@ -36,16 +36,15 @@ export async function createInterviewAgent(apiKey: string, opts: { orgName: stri
   const org = opts.orgName;
   const res = await request<{ id?: number; agent_id?: number; data?: { id?: number } }>(apiKey, "POST", "agents/create", {
     name: `${org} - Screening Interviewer`.slice(0, 80),
-    call_type: "Outgoing",
-    welcome_message: `Hello, this is an AI interview assistant calling on behalf of ${org} about your job application. Before we start: I am an AI, not a person, and this call is recorded for the hiring team. Is now a good time for a short ten minute conversation?`,
+    welcome_message: `Hello, I'm an AI interview assistant for ${org}. Before we start: I am an AI, not a person, and this conversation is recorded for the hiring team. Ready to begin?`,
     context_breakdown: [
       {
         title: "Identity and disclosure",
-        body: `You are an AI screening interviewer acting for ${org}. You are always honest that you are an AI assistant and that the call is recorded. This call's details are in the call context: candidate_name, company_name, role_title, role_summary and questions. Address the candidate by candidate_name.`,
+        body: `You are an AI screening interviewer acting for ${org}. You are always honest that you are an AI assistant and that the conversation is recorded. This session's details are in the session context: candidate_name, company_name, role_title, role_summary and questions. Address the candidate by candidate_name.`,
       },
       {
         title: "Interview flow",
-        body: "Ask the numbered questions in the call context field 'questions' one at a time, in order. Let the candidate finish. If an answer is vague, generic, or a claim is not backed up, ask exactly one specific follow-up asking for a concrete example of what they personally did. Do not evaluate, praise or criticise answers. Keep the whole call under twelve minutes; if time runs short, skip to the last (logistics) question.",
+        body: "Ask the numbered questions in the session context field 'questions' one at a time, in order. Let the candidate finish. If an answer is vague, generic, or a claim is not backed up, ask exactly one specific follow-up asking for a concrete example of what they personally did. Do not evaluate, praise or criticise answers. Keep the whole interview under twelve minutes; if time runs short, skip to the last (logistics) question.",
       },
       {
         title: "Candidate questions",
@@ -53,7 +52,7 @@ export async function createInterviewAgent(apiKey: string, opts: { orgName: stri
       },
       {
         title: "Opting out",
-        body: "If the candidate does not want to be interviewed by an AI, or asks to speak to a person, respect that immediately: thank them, confirm the recruiting team will contact them personally, and end the call politely.",
+        body: "If the candidate does not want to be interviewed by an AI, or asks to speak to a person, respect that immediately: thank them, confirm the recruiting team will contact them personally, and end the conversation politely.",
       },
       {
         title: "Language",
@@ -61,7 +60,7 @@ export async function createInterviewAgent(apiKey: string, opts: { orgName: stri
       },
       {
         title: "Closing",
-        body: "After the last question, thank the candidate, tell them the hiring team will review the conversation and get back to them, then end the call.",
+        body: "After the last question, thank the candidate, tell them the hiring team will review the conversation and get back to them, then end the conversation.",
       },
     ],
     post_call_actions: {
@@ -82,19 +81,23 @@ export async function createInterviewAgent(apiKey: string, opts: { orgName: stri
   return Number(id);
 }
 
-export async function dispatchCall(
+/**
+ * Creates a browser voice session: the candidate talks to the agent through
+ * their own microphone on our page, never a phone call. The client connects
+ * to `wsUrl` with the `@omnidim-ai/client` SDK.
+ */
+export async function createWebSession(
   apiKey: string,
-  opts: { agentId: number; toNumber: string; fromNumberId?: number | null; callContext: Record<string, string>; metadata: Record<string, string> },
-): Promise<{ requestId: string | null }> {
-  const res = await request<{ success?: boolean; requestId?: number | string; status?: string }>(apiKey, "POST", "calls/dispatch", {
+  opts: { agentId: number; customVariables: Record<string, string>; metadata: Record<string, string> },
+): Promise<{ sessionId: string; wsUrl: string; expiresAt: string | null }> {
+  const res = await request<{ session_id?: number; token?: string; ws_url?: string; expires_at?: string }>(apiKey, "POST", "sessions/create", {
     agent_id: opts.agentId,
-    to_number: opts.toNumber,
-    ...(opts.fromNumberId ? { from_number_id: opts.fromNumberId } : {}),
-    call_context: opts.callContext,
+    type: "voice",
+    custom_variables: opts.customVariables,
     metadata: opts.metadata,
   });
-  if (res.success === false) throw new OmnidimError(`Dispatch rejected: ${res.status ?? "unknown"}`);
-  return { requestId: res.requestId != null ? String(res.requestId) : null };
+  if (!res.ws_url || res.session_id == null) throw new OmnidimError("OmniDimension did not return a session");
+  return { sessionId: String(res.session_id), wsUrl: res.ws_url, expiresAt: res.expires_at ?? null };
 }
 
 export type CallLog = Record<string, unknown>;

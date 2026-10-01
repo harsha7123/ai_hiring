@@ -25,11 +25,11 @@ export const RECOMMENDATION: Record<string, { label: string; tone: Tone }> = {
 };
 
 export const INTERVIEW: Record<string, string> = {
-  queued: "Queued",
-  dispatched: "Calling",
+  queued: "Not started",
+  dispatched: "In progress",
   completed: "Completed",
   no_answer: "No answer",
-  failed: "Failed",
+  failed: "Not completed",
   cancelled: "Cancelled",
 };
 

@@ -221,7 +221,7 @@ export default async function CandidatePage({ params }: PageProps<"/app/position
             title="Interview"
             description={
               iv
-                ? `${INTERVIEW[iv.status]} · ${iv.attempts} dial${iv.attempts === 1 ? "" : "s"}${iv.completedAt ? ` · completed ${fmtDate(iv.completedAt)}` : ""}${iv.durationSec ? ` · ${Math.round(iv.durationSec / 60)} min` : ""}`
+                ? `${INTERVIEW[iv.status]} · ${iv.attempts} attempt${iv.attempts === 1 ? "" : "s"}${iv.completedAt ? ` · completed ${fmtDate(iv.completedAt)}` : ""}${iv.durationSec ? ` · ${Math.round(iv.durationSec / 60)} min` : ""}`
                 : "Not selected for interview"
             }
           />
@@ -247,7 +247,7 @@ export default async function CandidatePage({ params }: PageProps<"/app/position
             )}
             {iv?.recordingUrl && (
               <div>
-                <h3 className="mb-2 text-sm font-medium">Call recording</h3>
+                <h3 className="mb-2 text-sm font-medium">Recording</h3>
                 <audio controls preload="none" src={iv.recordingUrl} className="w-full" />
               </div>
             )}

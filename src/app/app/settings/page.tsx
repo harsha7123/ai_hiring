@@ -45,27 +45,21 @@ export default async function SettingsPage() {
       <Card>
         <CardHeader
           title="Voice interviews · OmniDimension"
-          description="Outbound AI interviews are placed through your OmniDimension account."
+          description="Candidates interview in their own browser, using their own microphone. OmniDimension hosts the agent; no phone number is needed."
           action={voiceReady ? <Badge tone="good">Connected</Badge> : <Badge tone="warn">Not configured</Badge>}
         />
         <div className="space-y-6 p-5">
           <ol className="list-decimal space-y-1 pl-5 text-sm text-ink-2">
             <li>Paste your OmniDimension API key (Dashboard → API). {keySource === "platform" && "A platform-wide key is already set on the server; a workspace key overrides it."}</li>
             <li>Click <span className="font-medium text-ink">Create interview agent</span>. The agent is configured with AI disclosure, adaptive follow-ups and this webhook.</li>
-            <li>Optionally set the phone number ID to call from (Dashboard → Phone numbers). Otherwise your default number is used.</li>
           </ol>
           <ActionForm action={saveVoice} className="space-y-4">
             <Field label="API key" htmlFor="apiKey" hint={org.omnidimApiKeyEnc ? "A key is saved (encrypted with AES-256-GCM). Leave blank to keep it." : "Stored encrypted. Never shown again after saving."}>
               <Input id="apiKey" name="apiKey" type="password" autoComplete="off" placeholder={org.omnidimApiKeyEnc ? "••••••••••••  saved" : "Paste key"} />
             </Field>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Agent ID" htmlFor="agentId" hint="Filled automatically when you create the agent; or use an agent you built yourself.">
-                <Input id="agentId" name="agentId" type="number" defaultValue={org.omnidimAgentId ?? ""} />
-              </Field>
-              <Field label="From number ID (optional)" htmlFor="fromNumberId">
-                <Input id="fromNumberId" name="fromNumberId" type="number" defaultValue={org.omnidimFromNumberId ?? ""} />
-              </Field>
-            </div>
+            <Field label="Agent ID" htmlFor="agentId" hint="Filled automatically when you create the agent; or use an agent you built yourself.">
+              <Input id="agentId" name="agentId" type="number" defaultValue={org.omnidimAgentId ?? ""} />
+            </Field>
             <div className="flex flex-wrap justify-end gap-2">
               <SubmitButton pendingText="Verifying…">Save voice settings</SubmitButton>
             </div>
@@ -102,7 +96,7 @@ export default async function SettingsPage() {
               </div>
             </div>
             <p className="mt-2 text-xs text-ink-3">
-              Keep this URL private: the secret in it authenticates OmniDimension. Call results are also reconciled from call logs every 20 seconds, so interviews complete even if a webhook is missed.
+              Keep this URL private: the secret in it authenticates OmniDimension. Interviews are completed from the transcript the candidate&apos;s own browser captures, so a missed or delayed webhook never blocks scoring — this URL only backfills the recording link and sentiment when available.
             </p>
           </div>
         </div>

@@ -14,6 +14,7 @@
     "worker:dev": "tsx --env-file=.env.local src/worker.ts"
   },
   "dependencies": {
+    "@omnidim-ai/client": "^0.1.0",
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.117.2",
     "drizzle-orm": "^0.45.3",

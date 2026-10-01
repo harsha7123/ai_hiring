@@ -2,10 +2,10 @@
 
 Multi-tenant web app that implements the proposal end to end:
 
-1. **Setup** — recruiter pastes a JD; the AI model extracts a requirement spec that the recruiter edits and confirms. Knockouts, weights, custom questions, shortlist size, interview pool and a hard call spend cap are set per role.
+1. **Setup** — recruiter pastes a JD; the AI model extracts a requirement spec that the recruiter edits and confirms. Knockouts, weights, custom questions, shortlist size, interview pool and a hard interview spend cap are set per role.
 2. **Stage 1: CV ranking** — bulk upload (PDF, DOCX, TXT, scanned images with OCR fallback). Every CV is structured, passed through a fast keyword pass, then scored on a fixed rubric. Every sub-score keeps only evidence quotes that are verified to exist in the CV.
-3. **Stage 2: consent and scheduling** — top N candidates get an SMS/WhatsApp invite (Twilio, optional) to a consent page where they book a slot, take the call now, or ask for a human. Unanswered invites are re-sent up to 3 times, then the candidate is marked unreachable.
-4. **Stage 3: AI voice interview** — calls go out through **OmniDimension** with per-candidate questions generated from the gap between their CV and the JD. The agent discloses it is an AI and that the call is recorded. No-answers retry up to 3 times at different times of day, within calling hours.
+3. **Stage 2: consent** — top N candidates get an SMS/WhatsApp invite (Twilio, optional) to a consent page. Unanswered invites are re-sent up to 3 times, then the candidate is marked unreachable.
+4. **Stage 3: AI voice interview (in-browser)** — the candidate consents, then talks to the agent right there in their own browser tab over their own microphone — no phone call, no app to install. Questions are generated per candidate from the gap between their CV and the JD; the agent discloses it is an AI and that the conversation is recorded. The interview completes and gets scored from the transcript the browser itself captured, so it never depends on a webhook arriving.
 5. **Stage 4: re-rank and reports** — the transcript is scored on a fixed rubric and combined with the CV score using the role's weights. The report includes a recommendation, strengths and concerns with verbatim quotes, skill verification, logistics and suggested probes. Unsupported claims are dropped before the report is released.
 6. **Delivery** — ranked shortlist plus reserve pool, report PDF export (print), CSV export, funnel analytics with drop-off reasons.
 
@@ -17,7 +17,7 @@ The platform ranks and recommends; it never rejects. Recruiters can promote or r
 - **Supabase Auth**: sign-up, sign-in and session cookies. The app keeps its own `users`/`memberships`/`organizations` tables (via Drizzle, in your own Postgres) keyed by the Supabase auth user id, for roles and multi-tenant data — Supabase itself only ever sees an email and password.
 - **PostgreSQL** via Drizzle ORM: all app data, including CV files and a durable job queue (`FOR UPDATE SKIP LOCKED`). This can be the same Postgres database Supabase gives your project, or any Postgres 14+.
 - **OpenAI** (Responses API, structured outputs): fast tier `gpt-5-mini` for CV parsing and scoring, smart tier `gpt-5` for questions, interview scoring and reports
-- **OmniDimension** REST API: voice agent, outbound calls, call logs and post-call webhook
+- **OmniDimension**: voice agent + browser voice sessions (`@omnidim-ai/client`). The candidate's mic and the agent's voice both run in their browser tab; a post-call webhook is used only as best-effort enrichment (recording link, sentiment), never as the thing scoring depends on.
 - Background worker and scheduler run in the web process by default, or as a separate process (`npm run worker`)
 
 ## Security
@@ -57,11 +57,10 @@ npm run dev                       # migrations run automatically on boot
 ## Connecting OmniDimension
 
 1. Set `OMNIDIM_API_KEY` on the server (platform-wide), or have each workspace paste its own key in **Settings → Voice interviews**. A workspace key overrides the platform key.
-2. Make sure `APP_URL` is your public `https://` address.
-3. In **Settings**, click **Create interview agent**. This creates an outgoing agent with AI disclosure, adaptive follow-ups, opt-out handling and the post-call webhook `APP_URL/api/webhooks/omnidim/<secret>`.
-4. Optional: set the **From number ID** to call from a specific number (OmniDimension → Phone numbers). For Indian candidates, import an Exotel or Plivo number there.
+2. Make sure `APP_URL` is your public `https://` address — a secure context is required for the browser to grant microphone access (plain `http://localhost` is exempt, for local dev).
+3. In **Settings**, click **Create interview agent**. This creates an agent with AI disclosure, adaptive follow-ups, opt-out handling and the post-call webhook `APP_URL/api/webhooks/omnidim/<secret>`.
 
-Call results arrive by webhook and are also reconciled from `GET /calls/logs` every 20 seconds, so interviews still complete if a webhook is missed.
+No phone number is needed — interviews are browser voice sessions (OmniDimension's Sessions API), not outbound calls. When the candidate clicks **Start my interview now**, the app creates a session server-side and the browser connects directly with `@omnidim-ai/client`, which handles microphone capture and audio playback. The moment the session ends, the browser posts the transcript it captured straight back to the app — that's what triggers scoring, so a missed or delayed webhook never blocks anything. The webhook is only used to backfill a recording link and sentiment, if OmniDimension provides them for sessions, and never re-scores an interview that's already completed.
 
 ## Deployment
 

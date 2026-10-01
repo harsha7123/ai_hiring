@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { ActionForm, CopyButton, SubmitButton, Uploader } from "@/components/client";
 import { Badge, ButtonLink, Card, CardHeader, Empty, Notice, Stat, td, th } from "@/components/ui";
-import { INTERVIEW, STAGE, fmtDate } from "@/lib/labels";
+import { INTERVIEW, STAGE } from "@/lib/labels";
 import { inviteLink } from "@/lib/pipeline";
 import { resendInvite, retryFailed, retrySpec, startInterviews } from "../../actions";
 import { funnel, type CandidateRow, type PositionRow } from "./data";
@@ -49,7 +49,7 @@ export function Overview({ position: p, rows, editable }: { position: PositionRo
       <Card>
         <CardHeader
           title="Interview pipeline"
-          description="Consent, scheduling and calls. Non-responders are re-invited up to three times; unanswered calls retry at different times of day."
+          description="Consent and in-browser AI interviews. Candidates click their link, consent, and talk to the agent through their own microphone — no phone call. Non-responders are re-invited up to three times."
         />
         {inPipeline.length === 0 ? (
           <Empty title="No candidates in the interview stage yet" />
@@ -60,8 +60,7 @@ export function Overview({ position: p, rows, editable }: { position: PositionRo
                 <tr>
                   <th className={th}>Candidate</th>
                   <th className={th}>Stage</th>
-                  <th className={th}>Call</th>
-                  <th className={th}>Next attempt</th>
+                  <th className={th}>Interview</th>
                   <th className={th}>Note</th>
                   <th className={th} />
                 </tr>
@@ -80,9 +79,8 @@ export function Overview({ position: p, rows, editable }: { position: PositionRo
                     </td>
                     <td className={`${td} text-ink-2`}>
                       {INTERVIEW[r.interviewStatus!]}
-                      {r.interviewAttempts ? <span className="text-ink-3"> · {r.interviewAttempts} dial{r.interviewAttempts > 1 ? "s" : ""}</span> : null}
+                      {r.interviewAttempts ? <span className="text-ink-3"> · {r.interviewAttempts} attempt{r.interviewAttempts > 1 ? "s" : ""}</span> : null}
                     </td>
-                    <td className={`${td} text-ink-3`}>{r.interviewStatus === "queued" && r.consentAt ? fmtDate(r.nextAttemptAt) : "—"}</td>
                     <td className={`${td} max-w-xs text-xs text-ink-3`}>{r.interviewError ?? r.error ?? r.stageReason ?? ""}</td>
                     <td className={`${td} text-right`}>
                       {editable && r.inviteToken && ["selected", "invited", "unreachable"].includes(r.stage) && (
@@ -172,7 +170,7 @@ function NextStep({ p, editable, total, waitingToSelect, processing, failed }: {
                 {waitingToSelect} ranked candidates are ready{processing ? `, ${processing} still processing` : ""}.
               </p>
               <p className="mt-0.5 text-sm text-ink-3">
-                Review the ranking first. Starting invites the top candidates (up to the pool of {p.interviewPool}) by SMS/WhatsApp to book their AI interview.
+                Review the ranking first. Starting sends the top candidates (up to the pool of {p.interviewPool}) a link to an in-browser AI interview they can take whenever they’re ready.
               </p>
             </div>
             <SubmitButton pendingText="Selecting…" confirm="Invite the top-ranked candidates to the AI interview?">

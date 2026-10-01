@@ -1,8 +1,8 @@
 /**
  * The screening pipeline: every stage is a durable job or a scheduler step.
- * setup -> parse -> score (1000 -> N) -> invite/consent -> call -> assess -> rerank -> shortlist
+ * setup -> parse -> score (1000 -> N) -> invite/consent -> interview -> assess -> rerank -> shortlist
  */
-import { and, asc, desc, eq, inArray, isNull, lt, sql as dsql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, sql as dsql } from "drizzle-orm";
 import { db, schema, sql } from "@/db";
 import type { PositionConfig } from "@/db/schema";
 import { extractText } from "@/lib/extract";
@@ -12,21 +12,15 @@ import * as ai from "@/lib/ai/tasks";
 import { enqueue } from "@/lib/jobs/queue";
 import { randomToken } from "@/lib/crypto";
 import { sendInvite, toE164 } from "@/lib/messaging";
-import {
-  dispatchCall,
-  listCallLogs,
-  parseCallResult,
-  phoneKey,
-  resolveOmnidimKey,
-  type CallResult,
-} from "@/lib/omnidim";
+import { createWebSession, resolveOmnidimKey, type CallResult } from "@/lib/omnidim";
 import { audit } from "@/lib/audit";
 
 const appUrl = () => (process.env.APP_URL || "http://localhost:3000").replace(/\/$/, "");
 /** Below this lexical coverage a CV is filtered out before any model call. */
 const LEXICAL_FLOOR = Number(process.env.LEXICAL_FLOOR ?? 15);
-const MAX_CALL_ATTEMPTS = 3;
 const MAX_INVITES = 3;
+/** A session the candidate never finished (closed tab, lost connection) this long ago is abandoned. */
+const STALE_SESSION_MS = 2 * 3600_000;
 
 async function getPosition(id: string) {
   const [p] = await db.select().from(schema.positions).where(eq(schema.positions.id, id));
@@ -120,7 +114,7 @@ export async function runScoreCv({ candidateId }: { candidateId: string }) {
   }
 }
 
-// ---------- Stage 2: selection, consent and scheduling ----------
+// ---------- Stage 2: selection, consent ----------
 
 /**
  * Advance the top-ranked CVs into the interview stage. Promoted candidates go first;
@@ -138,7 +132,7 @@ export async function selectForInterview(positionId: string, orgId: string, user
     .select({ id: schema.candidates.id })
     .from(schema.candidates)
     .where(and(eq(schema.candidates.positionId, positionId), inArray(schema.candidates.stage, ["scored"])))
-    .orderBy(desc(schema.candidates.promoted), dsql`${schema.candidates.cvScore} desc nulls last`)
+    .orderBy(dsql`${schema.candidates.promoted} desc, ${schema.candidates.cvScore} desc nulls last`)
     .limit(room);
   for (const { id } of picks) await selectCandidate(id, orgId, positionId);
   if (picks.length) {
@@ -182,7 +176,7 @@ export async function runSendInvite({ candidateId }: { candidateId: string }) {
   const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, c.orgId));
   const p = await getPosition(c.positionId);
   const first = c.name?.split(" ")[0] ?? "there";
-  const body = `Hi ${first}, thanks for applying to ${org.name} for the ${p.title} role. The first round is a short (about 10 min) AI-conducted voice interview. Choose a time or take the call now: ${inviteLink(c.inviteToken)}`;
+  const body = `Hi ${first}, thanks for applying to ${org.name} for the ${p.title} role. The first round is a short (about 10 min) AI interview you take right from your phone or computer browser, whenever you're ready: ${inviteLink(c.inviteToken)}`;
   const phone = toE164(c.phone);
   const result = phone ? await sendInvite(phone, body) : { sent: false, error: "No valid phone number" };
   await setCandidate(candidateId, {
@@ -193,204 +187,132 @@ export async function runSendInvite({ candidateId }: { candidateId: string }) {
   });
 }
 
-/** Candidate response from the consent page. */
-export async function recordConsent(opts: {
-  token: string;
-  choice: "now" | "schedule" | "human";
-  scheduledAt?: Date;
-  ip: string | null;
-  consentText: string;
-}) {
+/** Candidate consents on the invite page, immediately before starting the browser interview. */
+export async function recordConsent(opts: { token: string; ip: string | null; consentText: string }) {
   const [c] = await db.select().from(schema.candidates).where(eq(schema.candidates.inviteToken, opts.token));
   if (!c || !["selected", "invited", "consented"].includes(c.stage)) throw new Error("This invitation is no longer active.");
-  if (opts.choice === "human") {
-    await setCandidate(c.id, { stage: "declined", wantsHuman: true, stageReason: "Declined AI round; requested a human interviewer" });
-    await db.update(schema.interviews).set({ status: "cancelled" }).where(eq(schema.interviews.candidateId, c.id));
-    await audit({ orgId: c.orgId, action: "candidate.requested_human", target: c.id, ip: opts.ip });
-    return;
+  if (!c.consentAt) {
+    await setCandidate(c.id, { stage: "consented", consentAt: new Date(), consentIp: opts.ip, consentText: opts.consentText, error: null });
+    await audit({ orgId: c.orgId, action: "candidate.consented", target: c.id, ip: opts.ip });
   }
-  const when = opts.choice === "now" ? new Date() : opts.scheduledAt!;
-  await setCandidate(c.id, { stage: "consented", consentAt: new Date(), consentIp: opts.ip, consentText: opts.consentText, error: null });
+}
+
+export async function recordHumanRequest(token: string, ip: string | null) {
+  const [c] = await db.select().from(schema.candidates).where(eq(schema.candidates.inviteToken, token));
+  if (!c || !["selected", "invited", "consented"].includes(c.stage)) throw new Error("This invitation is no longer active.");
+  await setCandidate(c.id, { stage: "declined", wantsHuman: true, stageReason: "Declined AI round; requested a human interviewer" });
+  await db.update(schema.interviews).set({ status: "cancelled" }).where(eq(schema.interviews.candidateId, c.id));
+  await audit({ orgId: c.orgId, action: "candidate.requested_human", target: c.id, ip });
+}
+
+// ---------- Stage 3: AI voice interview (in-browser) ----------
+
+/**
+ * Starts (or restarts, if the candidate reloaded) the candidate's browser voice
+ * session. Returns the WebSocket URL the client connects to with the
+ * `@omnidim-ai/client` SDK. The candidate's own device and microphone are used —
+ * no phone number or outbound call is involved.
+ */
+export async function startWebInterview(token: string): Promise<{ wsUrl: string }> {
+  const [c] = await db.select().from(schema.candidates).where(eq(schema.candidates.inviteToken, token));
+  if (!c || c.stage !== "consented") throw new Error("This invitation is no longer active.");
+  const [iv] = await db.select().from(schema.interviews).where(eq(schema.interviews.candidateId, c.id));
+  if (!iv || iv.status === "completed" || iv.status === "cancelled") throw new Error("This interview is no longer active.");
+  if (!iv.questions) throw new Error("Your interview questions are still being prepared. Please try again in a minute.");
+
+  const [p] = await db.select().from(schema.positions).where(eq(schema.positions.id, iv.positionId));
+  const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, iv.orgId));
+  const apiKey = resolveOmnidimKey(org);
+  if (!apiKey || !org.omnidimAgentId) throw new Error("Interviews are not yet configured for this organisation. Please contact the recruiter.");
+
+  const [{ attempts: dials }] = await db
+    .select({ attempts: dsql<number>`coalesce(sum(${schema.interviews.attempts}), 0)::int` })
+    .from(schema.interviews)
+    .where(eq(schema.interviews.positionId, p.id));
+  if (dials >= p.maxInterviews) throw new Error("This role has reached its interview capacity. Please contact the recruiter.");
+
+  const { wsUrl } = await createWebSession(apiKey, {
+    agentId: org.omnidimAgentId,
+    customVariables: {
+      candidate_name: c.name?.split(" ")[0] ?? "there",
+      company_name: org.name,
+      role_title: p.title,
+      role_summary: `${p.spec?.summary ?? ""} Location: ${p.spec?.location ?? p.location ?? "not specified"}.`.trim(),
+      questions: iv.questions.map((q, i) => `${i + 1}. ${q.question}`).join("\n"),
+    },
+    metadata: { interview_id: iv.id, org_id: org.id },
+  });
   await db
     .update(schema.interviews)
-    .set({ status: "queued", nextAttemptAt: when, lastError: null })
-    .where(eq(schema.interviews.candidateId, c.id));
-  await audit({ orgId: c.orgId, action: "candidate.consented", target: c.id, ip: opts.ip, meta: { choice: opts.choice, when: when.toISOString() } });
+    .set({ status: "dispatched", dispatchedAt: new Date(), attempts: iv.attempts + 1, lastError: null })
+    .where(eq(schema.interviews.id, iv.id));
+  return { wsUrl };
 }
 
-// ---------- Stage 3: AI voice interview ----------
+/** Called by the browser once the session ends, with the transcript it captured live. */
+export async function completeWebInterview(token: string, transcript: string, durationSec: number | null): Promise<void> {
+  const [c] = await db.select().from(schema.candidates).where(eq(schema.candidates.inviteToken, token));
+  if (!c) throw new Error("Invalid invitation.");
+  const [iv] = await db.select().from(schema.interviews).where(eq(schema.interviews.candidateId, c.id));
+  if (!iv || iv.status !== "dispatched") return; // already completed or no longer active; ignore a duplicate post
 
-const TZ_OFFSET_MIN = Number(process.env.APP_TZ_OFFSET_MINUTES ?? 330); // IST
-
-/** Move a retry into calling hours (09:30-20:00 local), spread across times of day. */
-export function nextCallSlot(from: Date, delayHours: number): Date {
-  const t = new Date(from.getTime() + delayHours * 3600_000);
-  const local = new Date(t.getTime() + TZ_OFFSET_MIN * 60_000);
-  const h = local.getUTCHours() + local.getUTCMinutes() / 60;
-  if (h >= 9.5 && h < 20) return t;
-  const day = new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + (h >= 20 ? 1 : 0), 10, 0));
-  return new Date(day.getTime() - TZ_OFFSET_MIN * 60_000);
-}
-
-export async function dispatchDueInterviews() {
-  const due = await db
-    .select({ interview: schema.interviews, candidate: schema.candidates, position: schema.positions, org: schema.organizations })
-    .from(schema.interviews)
-    .innerJoin(schema.candidates, eq(schema.candidates.id, schema.interviews.candidateId))
-    .innerJoin(schema.positions, eq(schema.positions.id, schema.interviews.positionId))
-    .innerJoin(schema.organizations, eq(schema.organizations.id, schema.interviews.orgId))
-    .where(
-      and(
-        eq(schema.interviews.status, "queued"),
-        lt(schema.interviews.nextAttemptAt, new Date()),
-        eq(schema.candidates.stage, "consented"),
-      ),
-    )
-    .orderBy(asc(schema.interviews.nextAttemptAt))
-    .limit(20);
-
-  for (const { interview: iv, candidate: c, position: p, org } of due) {
-    const fail = (msg: string, retryInMin = 10) =>
-      db
-        .update(schema.interviews)
-        .set({ lastError: msg, nextAttemptAt: new Date(Date.now() + retryInMin * 60_000) })
-        .where(eq(schema.interviews.id, iv.id));
-
-    if (!iv.questions) {
-      await fail("Waiting for interview questions to be generated", 1);
-      continue;
-    }
-    // Hard spend cap per role: total dials, including retries.
-    const [{ dials }] = await db
-      .select({ dials: dsql<number>`coalesce(sum(${schema.interviews.attempts}), 0)::int` })
-      .from(schema.interviews)
-      .where(eq(schema.interviews.positionId, p.id));
-    if (dials >= p.maxInterviews) {
-      await fail(`Spend cap reached (${p.maxInterviews} calls for this role). Raise the cap to continue.`, 60);
-      continue;
-    }
-    const apiKey = resolveOmnidimKey(org);
-    if (!apiKey || !org.omnidimAgentId) {
-      // Graceful degradation: interviews wait in the queue until voice is configured.
-      await fail("Voice calling is not configured. Add the OmniDimension key and agent in Settings.", 15);
-      continue;
-    }
-    const phone = toE164(c.phone);
-    if (!phone) {
-      await db.update(schema.interviews).set({ status: "failed", lastError: "Candidate has no valid phone number" }).where(eq(schema.interviews.id, iv.id));
-      continue;
-    }
-    // Claim the row first so two schedulers can never dial the same candidate.
-    const claimed = await db
-      .update(schema.interviews)
-      .set({ status: "dispatched", dispatchedAt: new Date(), attempts: iv.attempts + 1, lastError: null })
-      .where(and(eq(schema.interviews.id, iv.id), eq(schema.interviews.status, "queued")))
-      .returning({ id: schema.interviews.id });
-    if (!claimed.length) continue;
-    try {
-      const { requestId } = await dispatchCall(apiKey, {
-        agentId: org.omnidimAgentId,
-        toNumber: phone,
-        fromNumberId: org.omnidimFromNumberId,
-        callContext: {
-          candidate_name: c.name?.split(" ")[0] ?? "there",
-          company_name: org.name,
-          role_title: p.title,
-          role_summary: `${p.spec?.summary ?? ""} Location: ${p.spec?.location ?? p.location ?? "not specified"}.`.trim(),
-          questions: iv.questions.map((q, i) => `${i + 1}. ${q.question}`).join("\n"),
-          interview_id: iv.id,
-        },
-        metadata: { interview_id: iv.id, org_id: org.id },
-      });
-      await db.update(schema.interviews).set({ omnidimRequestId: requestId }).where(eq(schema.interviews.id, iv.id));
-    } catch (err) {
-      await handleCallFailure(iv.id, err instanceof Error ? err.message : String(err));
-    }
-  }
-}
-
-async function handleCallFailure(interviewId: string, reason: string) {
-  const [iv] = await db.select().from(schema.interviews).where(eq(schema.interviews.id, interviewId));
-  if (!iv) return;
-  if (iv.attempts < MAX_CALL_ATTEMPTS) {
-    // Retry at a different time of day: +3h, then +20h.
-    const delay = iv.attempts === 1 ? 3 : 20;
-    await db
-      .update(schema.interviews)
-      .set({ status: "queued", nextAttemptAt: nextCallSlot(new Date(), delay), lastError: reason })
-      .where(eq(schema.interviews.id, interviewId));
-  } else {
-    await db.update(schema.interviews).set({ status: "no_answer", lastError: reason }).where(eq(schema.interviews.id, interviewId));
-    await setCandidate(iv.candidateId, { stage: "unreachable", stageReason: `No completed call after ${iv.attempts} attempts` });
-  }
-}
-
-/** Idempotent: webhook and poller may both deliver the same call. */
-export async function applyCallResult(interviewId: string, r: CallResult) {
-  const [iv] = await db.select().from(schema.interviews).where(eq(schema.interviews.id, interviewId));
-  if (!iv || iv.status !== "dispatched") return;
-  if (r.status === "in_progress") return;
-  if (r.status === "completed" && (r.transcript?.length ?? 0) >= 80) {
-    await db
-      .update(schema.interviews)
-      .set({
-        status: "completed",
-        completedAt: new Date(),
-        transcript: r.transcript,
-        recordingUrl: r.recordingUrl,
-        durationSec: r.durationSec,
-        summary: r.summary,
-        omnidimCallLogId: r.callLogId,
-      })
-      .where(eq(schema.interviews.id, interviewId));
-    if (r.wantsHuman) {
-      await setCandidate(iv.candidateId, { wantsHuman: true, stage: "declined", stageReason: "Asked for a human interviewer during the call" });
-      return;
-    }
-    await enqueue("assess_interview", { interviewId }, { orgId: iv.orgId });
+  if (transcript.trim().length < 80) {
+    await db.update(schema.interviews).set({ status: "failed", lastError: "Interview ended before it really started" }).where(eq(schema.interviews.id, iv.id));
     return;
   }
-  await handleCallFailure(interviewId, r.status === "completed" ? "Call ended before the interview started" : `Call ${r.status.replace("_", " ")}`);
+  await db
+    .update(schema.interviews)
+    .set({ status: "completed", completedAt: new Date(), transcript, durationSec, lastError: null })
+    .where(eq(schema.interviews.id, iv.id));
+  await enqueue("assess_interview", { interviewId: iv.id }, { orgId: iv.orgId });
 }
 
-/** Fallback when webhooks are delayed or blocked: reconcile with OmniDimension call logs. */
-export async function syncDispatchedCalls() {
-  const pending = await db
-    .select({ interview: schema.interviews, candidate: schema.candidates, org: schema.organizations })
-    .from(schema.interviews)
-    .innerJoin(schema.candidates, eq(schema.candidates.id, schema.interviews.candidateId))
-    .innerJoin(schema.organizations, eq(schema.organizations.id, schema.interviews.orgId))
-    .where(and(eq(schema.interviews.status, "dispatched"), lt(schema.interviews.dispatchedAt, new Date(Date.now() - 90_000))));
-  const byOrg = new Map<string, typeof pending>();
-  for (const row of pending) byOrg.set(row.org.id, [...(byOrg.get(row.org.id) ?? []), row]);
+/**
+ * Best-effort enrichment from OmniDimension's post-call webhook (recording link,
+ * sentiment). Never the primary completion path — completeWebInterview already
+ * guarantees the interview finishes and gets scored from what the browser itself
+ * captured, so this only backfills fields the client never had.
+ */
+export async function enrichFromWebhook(interviewId: string, r: CallResult) {
+  const [iv] = await db.select().from(schema.interviews).where(eq(schema.interviews.id, interviewId));
+  if (!iv) return;
+  const patch: Partial<typeof schema.interviews.$inferInsert> = {};
+  if (!iv.recordingUrl && r.recordingUrl) patch.recordingUrl = r.recordingUrl;
+  if (!iv.summary && r.summary) patch.summary = r.summary;
+  if (!iv.transcript && r.transcript && r.transcript.length >= 80) patch.transcript = r.transcript;
+  if (Object.keys(patch).length) await db.update(schema.interviews).set(patch).where(eq(schema.interviews.id, interviewId));
 
-  for (const rows of byOrg.values()) {
-    const org = rows[0].org;
-    const key = resolveOmnidimKey(org);
-    if (!key || !org.omnidimAgentId) continue;
-    let logs;
-    try {
-      logs = (await listCallLogs(key, org.omnidimAgentId)).map(parseCallResult);
-    } catch (err) {
-      console.error("call log sync failed", err);
-      continue;
-    }
-    for (const { interview: iv, candidate: c } of rows) {
-      const match = logs.find(
-        (l) =>
-          phoneKey(l.toNumber) === phoneKey(c.phone) &&
-          (!l.timeOfCall || l.timeOfCall.getTime() >= (iv.dispatchedAt?.getTime() ?? 0) - 5 * 60_000) &&
-          l.status !== "in_progress",
-      );
-      if (match) await applyCallResult(iv.id, match);
-      else if (iv.dispatchedAt && Date.now() - iv.dispatchedAt.getTime() > 45 * 60_000) {
-        await handleCallFailure(iv.id, "No call result received within 45 minutes");
-      }
-    }
+  // The webhook arrived before the browser's own completion post (candidate closed
+  // the tab right after hanging up, say) — finish the interview from it instead of
+  // leaving it stuck in "dispatched".
+  if (iv.status === "dispatched" && r.status === "completed" && (r.transcript?.length ?? iv.transcript?.length ?? 0) >= 80) {
+    await completeFromResult(iv.id, iv.orgId, patch.transcript ?? iv.transcript!, r.durationSec);
   }
 }
 
-/** Stage 2 retry: re-send unanswered invitations at different times of day, then give up. */
+async function completeFromResult(interviewId: string, orgId: string, transcript: string, durationSec: number | null) {
+  await db
+    .update(schema.interviews)
+    .set({ status: "completed", completedAt: new Date(), transcript, durationSec, lastError: null })
+    .where(eq(schema.interviews.id, interviewId));
+  await enqueue("assess_interview", { interviewId }, { orgId });
+}
+
+/** Cleans up sessions the candidate started but never finished (closed tab, lost connection). */
+export async function expireStaleWebSessions() {
+  const stale = await db
+    .select({ id: schema.interviews.id, candidateId: schema.interviews.candidateId })
+    .from(schema.interviews)
+    .where(and(eq(schema.interviews.status, "dispatched"), lt(schema.interviews.dispatchedAt, new Date(Date.now() - STALE_SESSION_MS))));
+  for (const iv of stale) {
+    await db
+      .update(schema.interviews)
+      .set({ status: "failed", lastError: "The interview was not completed (connection lost or the page was closed)" })
+      .where(eq(schema.interviews.id, iv.id));
+  }
+}
+
+/** Stage 2 retry: re-send the invite link to candidates who haven't started yet, then give up. */
 export async function retryInvites() {
   const stale = await db
     .select()
@@ -411,7 +333,7 @@ export async function retryInvites() {
       }
       continue;
     }
-    await enqueue("send_invite", { candidateId: c.id }, { orgId: c.orgId, runAt: nextCallSlot(new Date(), 0) });
+    await enqueue("send_invite", { candidateId: c.id }, { orgId: c.orgId });
     // Bump the timestamp now so the next tick does not enqueue a duplicate.
     await setCandidate(c.id, { lastInvitedAt: new Date() });
   }

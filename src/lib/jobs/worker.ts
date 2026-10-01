@@ -44,8 +44,8 @@ async function pollLoop() {
 }
 
 /**
- * Scheduler: dials due interviews, reconciles call results, retries invitations.
- * A transaction-scoped advisory lock keeps it to one instance at a time.
+ * Scheduler: expires abandoned browser interview sessions, retries unopened
+ * invitations. A transaction-scoped advisory lock keeps it to one instance at a time.
  */
 async function tick() {
   try {
@@ -53,8 +53,7 @@ async function tick() {
       const [{ locked }] = await tx<{ locked: boolean }[]>`select pg_try_advisory_xact_lock(727201) as locked`;
       if (!locked) return;
       await requeueStale();
-      await pipeline.dispatchDueInterviews();
-      await pipeline.syncDispatchedCalls();
+      await pipeline.expireStaleWebSessions();
       await pipeline.retryInvites();
       if (Date.now() - lastRetention > 6 * 3600_000) {
         lastRetention = Date.now();

@@ -70,13 +70,15 @@ const refresh = () => revalidatePath("/app", "layout");
 
 export const createPosition = guarded(async (fd) => {
   const ctx = await requireAction("recruiter");
-  const data = z
+  const parsed = z
     .object({
       title: z.string().trim().min(2, "Enter a role title").max(150),
       location: z.string().trim().max(150).optional(),
       jdText: z.string().trim().min(200, "Paste the full job description (at least 200 characters)").max(60_000),
     })
-    .parse(Object.fromEntries(fd));
+    .safeParse(Object.fromEntries(fd));
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  const data = parsed.data;
   const [p] = await db
     .insert(schema.positions)
     .values({
@@ -374,8 +376,11 @@ export async function rotateWebhookSecret() {
 
 export const inviteMember = guarded(async (fd) => {
   const ctx = await requireAction("admin");
-  const email = z.string().trim().toLowerCase().email("Enter a valid email").parse(fd.get("email"));
-  const role = z.enum(["admin", "recruiter", "viewer"]).parse(fd.get("role"));
+  const parsed = z
+    .object({ email: z.string().trim().toLowerCase().email("Enter a valid email"), role: z.enum(["admin", "recruiter", "viewer"]) })
+    .safeParse({ email: fd.get("email"), role: fd.get("role") });
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  const { email, role } = parsed.data;
   if (role === "admin" && ctx.role !== "owner") return { error: "Only the owner can invite admins." };
   const token = randomToken();
   await db.insert(schema.invites).values({
