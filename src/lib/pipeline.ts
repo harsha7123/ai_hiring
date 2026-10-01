@@ -12,6 +12,7 @@ import * as ai from "@/lib/ai/tasks";
 import { enqueue } from "@/lib/jobs/queue";
 import { randomToken } from "@/lib/crypto";
 import { sendInvite, toE164 } from "@/lib/messaging";
+import { isValidEmail, sendEmail } from "@/lib/email";
 import { createWebSession, resolveOmnidimKey, type CallResult } from "@/lib/omnidim";
 import { audit } from "@/lib/audit";
 
@@ -176,14 +177,21 @@ export async function runSendInvite({ candidateId }: { candidateId: string }) {
   const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, c.orgId));
   const p = await getPosition(c.positionId);
   const first = c.name?.split(" ")[0] ?? "there";
-  const body = `Hi ${first}, thanks for applying to ${org.name} for the ${p.title} role. The first round is a short (about 10 min) AI interview you take right from your phone or computer browser, whenever you're ready: ${inviteLink(c.inviteToken)}`;
+  const link = inviteLink(c.inviteToken);
+  const body = `Hi ${first}, thanks for applying to ${org.name} for the ${p.title} role. The first round is a short (about 10 min) AI interview you take right from your phone or computer browser, whenever you're ready: ${link}`;
+
+  const emailResult = isValidEmail(c.email)
+    ? await sendEmail(c.email, `Your interview for ${p.title} at ${org.name}`, body)
+    : { sent: false, error: "No valid email on file" };
   const phone = toE164(c.phone);
-  const result = phone ? await sendInvite(phone, body) : { sent: false, error: "No valid phone number" };
+  const smsResult = phone ? await sendInvite(phone, body) : { sent: false, error: "No valid phone number" };
+
+  const sent = emailResult.sent || smsResult.sent;
   await setCandidate(candidateId, {
     stage: "invited",
     inviteAttempts: c.inviteAttempts + 1,
     lastInvitedAt: new Date(),
-    error: result.sent ? null : `Invite not sent automatically: ${result.error}. Share the link manually.`,
+    error: sent ? null : `Invite not sent automatically (email: ${emailResult.error}; SMS: ${smsResult.error}). Share the link manually.`,
   });
 }
 
@@ -392,6 +400,36 @@ export async function rerankPosition(positionId: string) {
       await tx`update candidates set final_rank = ${i + 1}, final_score = ${r.score}, stage = ${stage}, updated_at = now() where id = ${r.id}`;
     }
   });
+  await notifyNewlyShortlisted(positionId);
+}
+
+/**
+ * Emails anyone who just became shortlisted for the first time (re-ranking can
+ * run many times as more interviews complete, so this only ever fires once per
+ * candidate — guarded by shortlistEmailSentAt, set in the same statement as the
+ * send so a retry can't double-send after a partial failure).
+ */
+async function notifyNewlyShortlisted(positionId: string) {
+  const p = await getPosition(positionId);
+  const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, p.orgId));
+  const pending = await db
+    .select()
+    .from(schema.candidates)
+    .where(and(eq(schema.candidates.positionId, positionId), eq(schema.candidates.stage, "shortlisted"), isNull(schema.candidates.shortlistEmailSentAt)));
+  for (const c of pending) {
+    // Mark first: an email that fails to send shouldn't be retried forever if
+    // the address itself is the problem, and a slow send shouldn't race the
+    // next re-rank into double-sending.
+    await setCandidate(c.id, { shortlistEmailSentAt: new Date() });
+    if (!isValidEmail(c.email)) continue;
+    const first = c.name?.split(" ")[0] ?? "there";
+    const next = p.schedulingLink
+      ? `The next step is a conversation with our hiring team. Please book a time that works for you here: ${p.schedulingLink}`
+      : "The next step is a conversation with our hiring team — they will reach out directly to arrange a time.";
+    const body = `Hi ${first}, good news — based on your application and interview, you've been shortlisted for the ${p.title} role at ${org.name}.\n\n${next}`;
+    const result = await sendEmail(c.email, `You've been shortlisted for ${p.title} at ${org.name}`, body);
+    if (!result.sent) console.error(`shortlist email failed for candidate ${c.id}:`, result.error);
+  }
 }
 
 // ---------- Retention (DPDP) ----------

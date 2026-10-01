@@ -4,10 +4,10 @@ Multi-tenant web app that implements the proposal end to end:
 
 1. **Setup** — recruiter pastes a JD; the AI model extracts a requirement spec that the recruiter edits and confirms. Knockouts, weights, custom questions, shortlist size, interview pool and a hard interview spend cap are set per role.
 2. **Stage 1: CV ranking** — bulk upload (PDF, DOCX, TXT, scanned images with OCR fallback). Every CV is structured, passed through a fast keyword pass, then scored on a fixed rubric. Every sub-score keeps only evidence quotes that are verified to exist in the CV.
-3. **Stage 2: consent** — top N candidates get an SMS/WhatsApp invite (Twilio, optional) to a consent page. Unanswered invites are re-sent up to 3 times, then the candidate is marked unreachable.
+3. **Stage 2: consent** — top N candidates get an invite (email via Resend and/or SMS/WhatsApp via Twilio, both optional — without either, the recruiter copies and shares the link manually) to a consent page. Unanswered invites are re-sent up to 3 times, then the candidate is marked unreachable.
 4. **Stage 3: AI voice interview (in-browser)** — the candidate consents, then talks to the agent right there in their own browser tab over their own microphone — no phone call, no app to install. Questions are generated per candidate from the gap between their CV and the JD; the agent discloses it is an AI and that the conversation is recorded. The interview completes and gets scored from the transcript the browser itself captured, so it never depends on a webhook arriving.
 5. **Stage 4: re-rank and reports** — the transcript is scored on a fixed rubric and combined with the CV score using the role's weights. The report includes a recommendation, strengths and concerns with verbatim quotes, skill verification, logistics and suggested probes. Unsupported claims are dropped before the report is released.
-6. **Delivery** — ranked shortlist plus reserve pool, report PDF export (print), CSV export, funnel analytics with drop-off reasons.
+6. **Delivery** — ranked shortlist plus reserve pool, report PDF export (print), CSV export, funnel analytics with drop-off reasons. Each candidate who makes the shortlist automatically gets a one-time email saying so, with a link to book the human round if you've set a scheduling link (Calendly or similar) for that role — otherwise it just says the hiring team will be in touch.
 
 The platform ranks and recommends; it never rejects. Recruiters can promote or reject anyone at any stage.
 

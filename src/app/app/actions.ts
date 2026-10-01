@@ -153,6 +153,10 @@ export const savePositionConfig = guarded(async (fd) => {
   };
   const knockoutsChanged =
     config.minYears !== p.config.minYears || config.mandatoryKeywords.join("|") !== p.config.mandatoryKeywords.join("|");
+  const schedulingLinkRaw = String(fd.get("schedulingLink") ?? "").trim();
+  if (schedulingLinkRaw && !/^https:\/\/.+/.test(schedulingLinkRaw)) {
+    return { error: "The scheduling link must start with https://" };
+  }
   await db
     .update(schema.positions)
     .set({
@@ -161,6 +165,7 @@ export const savePositionConfig = guarded(async (fd) => {
       targetShortlist: int(fd.get("targetShortlist"), 1, 500, p.targetShortlist),
       interviewPool: int(fd.get("interviewPool"), 1, 2000, p.interviewPool),
       maxInterviews: int(fd.get("maxInterviews"), 1, 5000, p.maxInterviews),
+      schedulingLink: schedulingLinkRaw.slice(0, 500) || null,
     })
     .where(eq(schema.positions.id, p.id));
   if (knockoutsChanged && p.specConfirmed) {

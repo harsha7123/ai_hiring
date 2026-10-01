@@ -3,6 +3,7 @@ import { and, desc, eq, gt, isNull } from "drizzle-orm";
 import { db, schema } from "@/db";
 import { can, requirePage } from "@/lib/auth/guard";
 import { messagingConfigured } from "@/lib/messaging";
+import { emailConfigured } from "@/lib/email";
 import { ActionForm, CopyButton, SubmitButton } from "@/components/client";
 import { Badge, Card, CardHeader, Field, Input, PageHeader, Select, td, th } from "@/components/ui";
 import { fmtDate } from "@/lib/labels";
@@ -105,14 +106,25 @@ export default async function SettingsPage() {
       <Card>
         <CardHeader
           title="Candidate messaging"
-          description="Consent invitations by SMS or WhatsApp."
-          action={messagingConfigured() ? <Badge tone="good">{process.env.TWILIO_CHANNEL === "whatsapp" ? "WhatsApp" : "SMS"} via Twilio</Badge> : <Badge>Manual links</Badge>}
+          description="Interview invitations and the shortlist notification, by email and/or SMS/WhatsApp."
+          action={
+            <div className="flex flex-wrap justify-end gap-1.5">
+              <Badge tone={emailConfigured() ? "good" : "neutral"}>{emailConfigured() ? "Email via Resend" : "Email not configured"}</Badge>
+              <Badge tone={messagingConfigured() ? "good" : "neutral"}>
+                {messagingConfigured() ? `${process.env.TWILIO_CHANNEL === "whatsapp" ? "WhatsApp" : "SMS"} via Twilio` : "SMS not configured"}
+              </Badge>
+            </div>
+          }
         />
-        <p className="p-5 text-sm text-ink-2">
-          {messagingConfigured()
-            ? "Invitations are sent automatically when candidates are selected, and re-sent up to three times."
-            : "Automatic sending is not configured on this server (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM). Until then, copy each candidate's invite link from the role's Interview pipeline."}
-        </p>
+        <div className="space-y-2 p-5 text-sm text-ink-2">
+          <p>
+            {emailConfigured() || messagingConfigured()
+              ? "Interview invitations are sent automatically (by whichever channels are configured below) when candidates are selected, and re-sent up to three times. Shortlisted candidates automatically get an email letting them know and, if you've set one, a link to book the human round."
+              : "Automatic sending is not configured on this server. Until then, copy each candidate's invite link from the role's Interview pipeline and share it yourself."}
+          </p>
+          {!emailConfigured() && <p className="text-xs text-ink-3">To enable email: set RESEND_API_KEY and EMAIL_FROM on the server (resend.com has a free tier).</p>}
+          {!messagingConfigured() && <p className="text-xs text-ink-3">To enable SMS/WhatsApp: set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_FROM on the server.</p>}
+        </div>
       </Card>
 
       <Card>

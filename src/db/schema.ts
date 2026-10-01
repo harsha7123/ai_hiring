@@ -154,6 +154,10 @@ export const positions = pgTable(
     targetShortlist: integer("target_shortlist").notNull().default(20),
     interviewPool: integer("interview_pool").notNull().default(200),
     maxInterviews: integer("max_interviews").notNull().default(250), // hard spend cap
+    // Where a shortlisted candidate books the human round (Calendly or similar).
+    // Included in the shortlist email when set; otherwise that email just says
+    // the hiring team will be in touch.
+    schedulingLink: text("scheduling_link"),
     status: positionStatus("status").notNull().default("draft"),
     createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -214,6 +218,10 @@ export const candidates = pgTable(
     consentIp: text("consent_ip"),
     consentText: text("consent_text"),
     wantsHuman: boolean("wants_human").notNull().default(false),
+    // Set once, the first time this candidate becomes shortlisted, so the
+    // "you've been shortlisted" email is never sent twice even though
+    // re-ranking can run many times as more interviews complete.
+    shortlistEmailSentAt: timestamp("shortlist_email_sent_at", { withTimezone: true }),
     error: text("error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

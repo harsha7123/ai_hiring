@@ -22,7 +22,7 @@ export function PositionSettings({ position: p, editable, isAdmin }: { position:
               <Field label="Interview pool" htmlFor="interviewPool">
                 <Input id="interviewPool" name="interviewPool" type="number" min={1} defaultValue={p.interviewPool} />
               </Field>
-              <Field label="Call spend cap" htmlFor="maxInterviews" hint="Hard ceiling on dials, including retries.">
+              <Field label="Interview spend cap" htmlFor="maxInterviews" hint="Hard ceiling on interview sessions, including restarts.">
                 <Input id="maxInterviews" name="maxInterviews" type="number" min={1} defaultValue={p.maxInterviews} />
               </Field>
             </div>
@@ -39,6 +39,13 @@ export function PositionSettings({ position: p, editable, isAdmin }: { position:
             </div>
             <Field label="Your screening questions" htmlFor="customQuestions" hint="Up to 5, one per line. Asked verbatim in every interview.">
               <Textarea id="customQuestions" name="customQuestions" rows={4} defaultValue={c.customQuestions.join("\n")} />
+            </Field>
+            <Field
+              label="Human-round scheduling link (optional)"
+              htmlFor="schedulingLink"
+              hint="A Calendly (or similar) booking page. Included in the automatic email sent when a candidate is shortlisted. Leave blank to just say your team will be in touch."
+            >
+              <Input id="schedulingLink" name="schedulingLink" type="url" placeholder="https://calendly.com/your-team/interview" defaultValue={p.schedulingLink ?? ""} />
             </Field>
             {editable && (
               <div className="flex justify-end border-t border-line pt-5">
