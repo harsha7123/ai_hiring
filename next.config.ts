@@ -4,7 +4,9 @@ const isDev = process.env.NODE_ENV !== "production";
 
 const csp = [
   "default-src 'self'",
-  `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}`,
+  // blob: is required for the interview widget's AudioWorklet (mic processing
+  // runs from a blob: module the SDK generates at runtime, not a real file).
+  `script-src 'self' 'unsafe-inline' blob:${isDev ? " 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
@@ -13,6 +15,9 @@ const csp = [
   // gateway from the candidate's browser (the exact host isn't a stable contract
   // per OmniDimension's own docs, so this allows any omnidim.io subdomain).
   "connect-src 'self' https://*.omnidim.io wss://*.omnidim.io",
+  // Belt-and-suspenders with the blob: in script-src above — browsers are not
+  // fully consistent about which directive governs AudioWorklet module loading.
+  "worker-src 'self' blob:",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",
