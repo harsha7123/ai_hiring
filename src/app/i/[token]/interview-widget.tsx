@@ -34,7 +34,7 @@ export function InterviewWidget({ token, wsUrl }: { token: string; wsUrl: string
       if (endedOnce.current) return;
       endedOnce.current = true;
       setPhase("saving");
-      const text = transcriptRef.current.filter((t) => t.final).map(toLine).join("\n");
+      const text = transcriptRef.current.map(toLine).join("\n");
       try {
         await fetch(`/api/i/${token}/complete`, {
           method: "POST",
@@ -53,7 +53,11 @@ export function InterviewWidget({ token, wsUrl }: { token: string; wsUrl: string
     });
     session.on("transcript", (t: TranscriptEvent) => {
       setTranscript((prev) => {
-        const next = t.final ? [...prev.filter((p) => !(p.role === t.role && !p.final)), t] : [...prev.filter((p) => p.final), t];
+        // Each new chunk for the same speaker as the last line is that line still
+        // growing (streaming ASR/TTS text) — replace it in place rather than
+        // appending, so one turn stays one line. A new speaker starts a new line.
+        const last = prev[prev.length - 1];
+        const next = last && last.role === t.role ? [...prev.slice(0, -1), t] : [...prev, t];
         transcriptRef.current = next;
         return next;
       });
@@ -108,14 +112,12 @@ export function InterviewWidget({ token, wsUrl }: { token: string; wsUrl: string
       </div>
       <div ref={listRef} className="h-72 space-y-3 overflow-y-auto p-5">
         {transcript.length === 0 && phase === "active" && <p className="text-sm text-ink-3">Waiting for the first question…</p>}
-        {transcript
-          .filter((t) => t.final)
-          .map((t, i) => (
-            <p key={i} className="text-sm leading-relaxed">
-              <span className="font-medium text-ink">{t.role === "agent" ? "Interviewer" : "You"}:</span>{" "}
-              <span className="text-ink-2">{t.text}</span>
-            </p>
-          ))}
+        {transcript.map((t, i) => (
+          <p key={i} className="text-sm leading-relaxed">
+            <span className="font-medium text-ink">{t.role === "agent" ? "Interviewer" : "You"}:</span>{" "}
+            <span className="text-ink-2">{t.text}</span>
+          </p>
+        ))}
       </div>
       <div className="flex items-center justify-between gap-3 border-t border-line px-5 py-3">
         <button
