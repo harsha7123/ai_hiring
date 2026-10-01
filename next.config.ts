@@ -9,7 +9,10 @@ const csp = [
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
   "media-src 'self' https:", // call recordings are served by the voice provider
-  "connect-src 'self'",
+  // The in-browser interview opens a WebSocket straight to OmniDimension's voice
+  // gateway from the candidate's browser (the exact host isn't a stable contract
+  // per OmniDimension's own docs, so this allows any omnidim.io subdomain).
+  "connect-src 'self' https://*.omnidim.io wss://*.omnidim.io",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",
@@ -30,7 +33,10 @@ const nextConfig: NextConfig = {
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "X-Frame-Options", value: "DENY" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" },
+          // microphone=(self): the in-browser AI interview needs mic access on our own
+          // pages. Still blocked for any cross-origin iframe, and camera/geolocation/
+          // payment stay fully blocked since nothing in the app uses them.
+          { key: "Permissions-Policy", value: "camera=(), microphone=(self), geolocation=(), payment=()" },
         ],
       },
     ];
