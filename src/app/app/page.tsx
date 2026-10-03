@@ -20,13 +20,15 @@ export default async function Dashboard() {
       status: schema.positions.status,
       target: schema.positions.targetShortlist,
       createdAt: schema.positions.createdAt,
-      total: sql<number>`(select count(*)::int from candidates c where c.position_id = ${schema.positions.id})`,
-      ranked: sql<number>`(select count(*)::int from candidates c where c.position_id = ${schema.positions.id} and c.cv_score is not null)`,
-      interviewed: sql<number>`(select count(*)::int from candidates c where c.position_id = ${schema.positions.id} and c.interview_score is not null)`,
-      shortlisted: sql<number>`(select count(*)::int from candidates c where c.position_id = ${schema.positions.id} and c.stage = 'shortlisted')`,
+      total: sql<number>`count(${schema.candidates.id})::int`,
+      ranked: sql<number>`(count(${schema.candidates.id}) filter (where ${schema.candidates.cvScore} is not null))::int`,
+      interviewed: sql<number>`(count(${schema.candidates.id}) filter (where ${schema.candidates.interviewScore} is not null))::int`,
+      shortlisted: sql<number>`(count(${schema.candidates.id}) filter (where ${schema.candidates.stage} = 'shortlisted'))::int`,
     })
     .from(schema.positions)
+    .leftJoin(schema.candidates, eq(schema.candidates.positionId, schema.positions.id))
     .where(eq(schema.positions.orgId, ctx.org.id))
+    .groupBy(schema.positions.id)
     .orderBy(desc(schema.positions.createdAt));
 
   const active = positions.filter((p) => p.status !== "archived");
