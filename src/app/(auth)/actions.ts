@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { db, schema } from "@/db";
+import { DEFAULT_ORG_SETTINGS } from "@/db/schema";
 import { audit } from "@/lib/audit";
 import { randomToken, sha256 } from "@/lib/crypto";
 import { passwordProblem } from "@/lib/auth/password-policy";
@@ -60,7 +61,7 @@ export async function signup(_: FormState, fd: FormData): Promise<FormState> {
   const webhookSecret = randomToken(24);
   const [org] = await db
     .insert(schema.organizations)
-    .values({ name: orgName, webhookSecret, settings: { retentionRecordingDays: 90, retentionRecordDays: 180 } })
+    .values({ name: orgName, webhookSecret, settings: DEFAULT_ORG_SETTINGS })
     .returning({ id: schema.organizations.id });
   await db.insert(schema.memberships).values({ userId: data.user.id, orgId: org.id, role: "owner" });
   await audit({ orgId: org.id, userId: data.user.id, action: "auth.signup", ip: await clientIp() });
@@ -146,7 +147,7 @@ export async function createWorkspace(_: FormState, fd: FormData): Promise<FormS
   const webhookSecret = randomToken(24);
   const [org] = await db
     .insert(schema.organizations)
-    .values({ name: orgName, webhookSecret, settings: { retentionRecordingDays: 90, retentionRecordDays: 180 } })
+    .values({ name: orgName, webhookSecret, settings: DEFAULT_ORG_SETTINGS })
     .returning({ id: schema.organizations.id });
   await db.insert(schema.memberships).values({ userId: user.id, orgId: org.id, role: "owner" }).onConflictDoNothing();
   await audit({ orgId: org.id, userId: user.id, action: "auth.signup", ip: await clientIp() });

@@ -126,6 +126,22 @@ export async function createWebSession(
   return { sessionId: String(res.session_id), wsUrl: res.ws_url, expiresAt: res.expires_at ?? null };
 }
 
+/** Places an outbound AI interview phone call (phone_call interview mode only). */
+export async function dispatchCall(
+  apiKey: string,
+  opts: { agentId: number; toNumber: string; fromNumberId?: number | null; callContext: Record<string, string>; metadata: Record<string, string> },
+): Promise<{ requestId: string | null }> {
+  const res = await request<{ success?: boolean; requestId?: number | string; status?: string }>(apiKey, "POST", "calls/dispatch", {
+    agent_id: opts.agentId,
+    to_number: opts.toNumber,
+    ...(opts.fromNumberId ? { from_number_id: opts.fromNumberId } : {}),
+    call_context: opts.callContext,
+    metadata: opts.metadata,
+  });
+  if (res.success === false) throw new OmnidimError(`Dispatch rejected: ${res.status ?? "unknown"}`);
+  return { requestId: res.requestId != null ? String(res.requestId) : null };
+}
+
 export type CallLog = Record<string, unknown>;
 
 export async function listCallLogs(apiKey: string, agentId: number, pagesize = 100): Promise<CallLog[]> {

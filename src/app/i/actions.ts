@@ -7,8 +7,13 @@ import type { FormState } from "@/components/client";
 
 const TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/;
 
-/** Candidate consents, then the browser connects directly — returns the session's wsUrl. */
-export type StartState = { error?: string; wsUrl?: string };
+/**
+ * Candidate consents. For an in-browser role the browser then connects
+ * directly — wsUrl is returned. For a phone-call role there's nothing more
+ * for the browser to do: the call itself is placed later by the scheduler,
+ * within calling hours — waitingForCall tells the page to show that instead.
+ */
+export type StartState = { error?: string; wsUrl?: string; waitingForCall?: boolean };
 
 export async function startInterview(_: StartState | undefined, fd: FormData): Promise<StartState> {
   const token = String(fd.get("token") ?? "");
@@ -16,7 +21,8 @@ export async function startInterview(_: StartState | undefined, fd: FormData): P
   if (!TOKEN_RE.test(token)) return { error: "Invalid invitation link." };
   if (fd.get("consent") !== "yes") return { error: "Please confirm your consent to continue." };
   try {
-    await recordConsent({ token, ip: await clientIp(), consentText });
+    const { mode } = await recordConsent({ token, ip: await clientIp(), consentText });
+    if (mode === "phone_call") return { waitingForCall: true };
     const { wsUrl } = await startWebInterview(token);
     return { wsUrl };
   } catch (err) {

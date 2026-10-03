@@ -157,6 +157,12 @@ export const savePositionConfig = guarded(async (fd) => {
   if (schedulingLinkRaw && !/^https:\/\/.+/.test(schedulingLinkRaw)) {
     return { error: "The scheduling link must start with https://" };
   }
+  const requestedMode = String(fd.get("interviewMode") ?? p.interviewMode);
+  if (requestedMode !== "in_browser" && requestedMode !== "phone_call") return { error: "Invalid interview mode." };
+  if (requestedMode === "phone_call") {
+    const [org] = await db.select({ omnidimFromNumberId: schema.organizations.omnidimFromNumberId }).from(schema.organizations).where(eq(schema.organizations.id, ctx.org.id));
+    if (!org.omnidimFromNumberId) return { error: "Add your OmniDimension phone number ID in Settings → Voice interviews before using phone-call interviews." };
+  }
   await db
     .update(schema.positions)
     .set({
@@ -166,6 +172,7 @@ export const savePositionConfig = guarded(async (fd) => {
       interviewPool: int(fd.get("interviewPool"), 1, 2000, p.interviewPool),
       maxInterviews: int(fd.get("maxInterviews"), 1, 5000, p.maxInterviews),
       schedulingLink: schedulingLinkRaw.slice(0, 500) || null,
+      interviewMode: requestedMode,
     })
     .where(eq(schema.positions.id, p.id));
   if (knockoutsChanged && p.specConfirmed) {
@@ -316,6 +323,9 @@ export const updateOrg = guarded(async (fd) => {
   const ctx = await requireAction("admin");
   const name = String(fd.get("name") ?? "").trim().slice(0, 100);
   if (name.length < 2) return { error: "Enter an organisation name." };
+  const callWindowStartHour = int(fd.get("callWindowStartHour"), 0, 23, 9);
+  const callWindowEndHour = int(fd.get("callWindowEndHour"), 1, 24, 18);
+  if (callWindowStartHour >= callWindowEndHour) return { error: "The calling-hours start must be before the end." };
   const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, ctx.org.id));
   await db
     .update(schema.organizations)
@@ -325,6 +335,8 @@ export const updateOrg = guarded(async (fd) => {
         ...org.settings,
         retentionRecordingDays: int(fd.get("retentionRecordingDays"), 7, 3650, 90),
         retentionRecordDays: int(fd.get("retentionRecordDays"), 30, 3650, 180),
+        callWindowStartHour,
+        callWindowEndHour,
       },
     })
     .where(eq(schema.organizations.id, ctx.org.id));

@@ -10,7 +10,14 @@ export default async function InvitePage({ params }: PageProps<"/i/[token]">) {
   const { token } = await params;
   const [row] = /^[A-Za-z0-9_-]{20,64}$/.test(token)
     ? await db
-        .select({ c: schema.candidates, orgName: schema.organizations.name, title: schema.positions.title, interviewStatus: schema.interviews.status })
+        .select({
+          c: schema.candidates,
+          orgName: schema.organizations.name,
+          orgSettings: schema.organizations.settings,
+          title: schema.positions.title,
+          interviewMode: schema.positions.interviewMode,
+          interviewStatus: schema.interviews.status,
+        })
         .from(schema.candidates)
         .innerJoin(schema.organizations, eq(schema.organizations.id, schema.candidates.orgId))
         .innerJoin(schema.positions, eq(schema.positions.id, schema.candidates.positionId))
@@ -32,9 +39,14 @@ export default async function InvitePage({ params }: PageProps<"/i/[token]">) {
       </Card>,
     );
   }
-  const { c, orgName, title, interviewStatus } = row;
+  const { c, orgName, orgSettings, title, interviewMode, interviewStatus } = row;
+  const phoneCall = interviewMode === "phone_call";
+  const fmtHour = (h: number) => (h === 0 || h === 24 ? "12am" : h === 12 ? "12pm" : h > 12 ? `${h - 12}pm` : `${h}am`);
+  const callWindowLabel = `between ${fmtHour(orgSettings.callWindowStartHour ?? 9)} and ${fmtHour(orgSettings.callWindowEndHour ?? 18)}`;
   const first = c.name?.split(" ")[0];
-  const consentText = `I agree that ${orgName} may conduct a recorded screening interview with me using an AI voice assistant, and process my CV, the recording and the transcript to assess my application for ${title}. I understand the AI assists the hiring team; people make the hiring decision. I can ask for a human interviewer instead, and I can request deletion of my data.`;
+  const consentText = phoneCall
+    ? `I agree that ${orgName} may conduct a recorded screening interview with me by phone using an AI voice assistant, and process my CV, the recording and the transcript to assess my application for ${title}. I understand the AI assists the hiring team; people make the hiring decision. I can ask for a human interviewer instead, and I can request deletion of my data.`
+    : `I agree that ${orgName} may conduct a recorded screening interview with me using an AI voice assistant, and process my CV, the recording and the transcript to assess my application for ${title}. I understand the AI assists the hiring team; people make the hiring decision. I can ask for a human interviewer instead, and I can request deletion of my data.`;
   const canInterview = ["selected", "invited", "consented"].includes(c.stage) && interviewStatus !== "completed" && interviewStatus !== "cancelled";
 
   return shell(
@@ -57,14 +69,22 @@ export default async function InvitePage({ params }: PageProps<"/i/[token]">) {
       ) : canInterview ? (
         <>
           <div className="mt-6 space-y-3 text-[15px] leading-relaxed text-ink-2">
-            <p>
-              The first round is a short, structured voice interview of about 8 to 12 minutes, conducted by an <strong className="font-medium text-ink">AI
-              voice assistant</strong> acting for {orgName} — right here in your browser, using your microphone. No phone call, and no app to install. The
-              conversation is recorded so the hiring team can review it.
-            </p>
+            {phoneCall ? (
+              <p>
+                The first round is a short, structured phone interview of about 8 to 12 minutes, conducted by an <strong className="font-medium text-ink">AI voice
+                assistant</strong> acting for {orgName}. Once you confirm below, we&apos;ll call the number on file {callWindowLabel}. The call is recorded so the
+                hiring team can review it.
+              </p>
+            ) : (
+              <p>
+                The first round is a short, structured voice interview of about 8 to 12 minutes, conducted by an <strong className="font-medium text-ink">AI
+                voice assistant</strong> acting for {orgName} — right here in your browser, using your microphone. No phone call, and no app to install. The
+                conversation is recorded so the hiring team can review it.
+              </p>
+            )}
             <p>You can ask questions about the role during the interview. People at {orgName} review every interview and make all decisions.</p>
           </div>
-          <ConsentForm token={token} consentText={consentText} />
+          <ConsentForm token={token} consentText={consentText} phoneCall={phoneCall} callWindowLabel={callWindowLabel} />
         </>
       ) : (
         <Card className="mt-8 p-6">

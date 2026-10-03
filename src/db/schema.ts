@@ -57,12 +57,27 @@ export const interviewStatus = pgEnum("interview_status", [
   "cancelled",
 ]);
 
+export const interviewMode = pgEnum("interview_mode", ["in_browser", "phone_call"]);
+
 export const jobStatus = pgEnum("job_status", ["pending", "running", "done", "failed"]);
 
 export type OrgSettings = {
   retentionRecordingDays: number;
   retentionRecordDays: number;
   consentText?: string;
+  // Outbound AI interview calls (phone_call mode only) only dial within this
+  // local-hour window, every day. Times are in IST (Asia/Kolkata) — this app
+  // is built for India-based hiring teams. In-browser interviews, email and
+  // SMS are never restricted by this window.
+  callWindowStartHour: number;
+  callWindowEndHour: number;
+};
+
+export const DEFAULT_ORG_SETTINGS: OrgSettings = {
+  retentionRecordingDays: 90,
+  retentionRecordDays: 180,
+  callWindowStartHour: 9,
+  callWindowEndHour: 18,
 };
 
 export const organizations = pgTable("organizations", {
@@ -154,6 +169,10 @@ export const positions = pgTable(
     targetShortlist: integer("target_shortlist").notNull().default(20),
     interviewPool: integer("interview_pool").notNull().default(200),
     maxInterviews: integer("max_interviews").notNull().default(250), // hard spend cap
+    // How this role's Stage 3 screening interview is conducted. "phone_call"
+    // requires the org to have an OmniDimension phone number configured
+    // (organizations.omnidimFromNumberId) — enforced when this is set, not just in the UI.
+    interviewMode: interviewMode("interview_mode").notNull().default("in_browser"),
     // Where a shortlisted candidate books the human round (Calendly or similar).
     // Included in the shortlist email when set; otherwise that email just says
     // the hiring team will be in touch.

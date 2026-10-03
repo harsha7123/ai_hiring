@@ -1,5 +1,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
+import { eq } from "drizzle-orm";
+import { db, schema } from "@/db";
 import { can, requirePage } from "@/lib/auth/guard";
 import { AutoRefresh } from "@/components/client";
 import { Badge, cx, PageHeader } from "@/components/ui";
@@ -29,6 +31,11 @@ export default async function PositionPage({ params, searchParams }: PageProps<"
   const rows = await loadCandidates(ctx.org.id, id);
   const editable = can(ctx.role, "recruiter");
   const cvPool = tab === "overview" ? await loadCvPoolStats(ctx.org.id, id) : null;
+  let phoneAvailable = false;
+  if (tab === "settings") {
+    const [org] = await db.select({ omnidimFromNumberId: schema.organizations.omnidimFromNumberId }).from(schema.organizations).where(eq(schema.organizations.id, ctx.org.id));
+    phoneAvailable = !!org?.omnidimFromNumberId;
+  }
 
   return (
     <>
@@ -64,7 +71,7 @@ export default async function PositionPage({ params, searchParams }: PageProps<"
       {tab === "requirements" && <Requirements position={position} editable={editable} />}
       {tab === "candidates" && <Candidates position={position} rows={rows} editable={editable} stage={typeof sp.stage === "string" ? sp.stage : undefined} />}
       {tab === "shortlist" && <Shortlist position={position} rows={rows} />}
-      {tab === "settings" && <PositionSettings position={position} editable={editable} isAdmin={can(ctx.role, "admin")} />}
+      {tab === "settings" && <PositionSettings position={position} editable={editable} isAdmin={can(ctx.role, "admin")} phoneAvailable={phoneAvailable} />}
     </>
   );
 }

@@ -12,7 +12,12 @@ const HANDLERS: Record<JobType, (payload: never) => Promise<void>> = {
 };
 
 const CONCURRENCY = Number(process.env.WORKER_CONCURRENCY ?? 6);
-const TICK_MS = 20_000;
+const TICK_MS = 45_000;
+/** How long the poll loop sleeps between claims when there's no work. On a
+ * shared/free-tier CPU this loop runs in the same process as web requests, so
+ * polling too tightly steals cycles from actual page loads for no benefit —
+ * there's nothing time-critical about noticing a new job a few seconds later. */
+const IDLE_SLEEP_MS = 4_000;
 let running = 0;
 let started = false;
 let lastRetention = 0;
@@ -35,7 +40,7 @@ async function pollLoop() {
     try {
       const jobs = await claim(CONCURRENCY - running);
       for (const job of jobs) void runJob(job);
-      await sleep(jobs.length ? 200 : 1000);
+      await sleep(jobs.length ? 500 : IDLE_SLEEP_MS);
     } catch (err) {
       console.error("[worker] poll error", err);
       await sleep(5000);
@@ -54,6 +59,8 @@ async function tick() {
       if (!locked) return;
       await requeueStale();
       await pipeline.expireStaleWebSessions();
+      await pipeline.dispatchDueInterviews();
+      await pipeline.syncDispatchedCalls();
       await pipeline.retryInvites();
       if (Date.now() - lastRetention > 6 * 3600_000) {
         lastRetention = Date.now();

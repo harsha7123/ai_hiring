@@ -75,6 +75,17 @@ export default async function SettingsPage() {
             <Field label="Agent ID" htmlFor="agentId" hint="Filled automatically when you create the agent; or use an agent you built yourself.">
               <Input id="agentId" name="agentId" type="number" defaultValue={org.omnidimAgentId ?? ""} />
             </Field>
+            <Field
+              label="Phone number ID (optional)"
+              htmlFor="fromNumberId"
+              hint={
+                org.omnidimFromNumberId
+                  ? "Set — roles can be switched to phone-call interviews in their own Settings tab."
+                  : "Your OmniDimension outbound Caller ID (Dashboard → Phone Numbers). Only needed to offer phone-call interviews instead of in-browser ones for a role."
+              }
+            >
+              <Input id="fromNumberId" name="fromNumberId" type="number" defaultValue={org.omnidimFromNumberId ?? ""} />
+            </Field>
             <div className="flex flex-wrap justify-end gap-2">
               <SubmitButton pendingText="Verifying…">Save voice settings</SubmitButton>
             </div>
@@ -228,6 +239,14 @@ export default async function SettingsPage() {
             </Field>
             <Field label="Candidate records (days)" htmlFor="retentionRecordDays">
               <Input id="retentionRecordDays" name="retentionRecordDays" type="number" min={30} defaultValue={org.settings.retentionRecordDays} />
+            </Field>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Calling hours start" htmlFor="callWindowStartHour" hint="24h, India time (IST). Only applies to phone-call interviews — email and SMS send any time.">
+              <Input id="callWindowStartHour" name="callWindowStartHour" type="number" min={0} max={23} defaultValue={org.settings.callWindowStartHour ?? 9} />
+            </Field>
+            <Field label="Calling hours end" htmlFor="callWindowEndHour" hint="24h, India time (IST).">
+              <Input id="callWindowEndHour" name="callWindowEndHour" type="number" min={1} max={24} defaultValue={org.settings.callWindowEndHour ?? 18} />
             </Field>
           </div>
           <div className="flex justify-end">

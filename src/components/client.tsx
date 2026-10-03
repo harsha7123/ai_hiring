@@ -108,7 +108,7 @@ export function CopyButton({ value, label = "Copy" }: { value: string; label?: s
 }
 
 /** Re-renders server data while background work is in flight. */
-export function AutoRefresh({ active, intervalMs = 4000 }: { active: boolean; intervalMs?: number }) {
+export function AutoRefresh({ active, intervalMs = 8000 }: { active: boolean; intervalMs?: number }) {
   const router = useRouter();
   useEffect(() => {
     if (!active) return;

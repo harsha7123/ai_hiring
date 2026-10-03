@@ -1,9 +1,9 @@
 import { ActionForm, SubmitButton } from "@/components/client";
-import { Card, CardHeader, Field, Input, Textarea } from "@/components/ui";
+import { Card, CardHeader, Field, Input, Select, Textarea } from "@/components/ui";
 import { deletePosition, savePositionConfig, setPositionStatus } from "../../actions";
 import type { PositionRow } from "./data";
 
-export function PositionSettings({ position: p, editable, isAdmin }: { position: PositionRow; editable: boolean; isAdmin: boolean }) {
+export function PositionSettings({ position: p, editable, isAdmin, phoneAvailable }: { position: PositionRow; editable: boolean; isAdmin: boolean; phoneAvailable: boolean }) {
   const c = p.config;
   return (
     <div className="grid gap-6 lg:grid-cols-3">
@@ -26,6 +26,20 @@ export function PositionSettings({ position: p, editable, isAdmin }: { position:
                 <Input id="maxInterviews" name="maxInterviews" type="number" min={1} defaultValue={p.maxInterviews} />
               </Field>
             </div>
+            <Field
+              label="Interview mode"
+              htmlFor="interviewMode"
+              hint={
+                phoneAvailable
+                  ? "Phone call: an outbound AI call, placed within your configured calling hours. In-browser: the candidate talks to the agent in their own browser tab, right away."
+                  : "In-browser is the only option until your workspace has an OmniDimension phone number — add one in Settings → Voice interviews."
+              }
+            >
+              <Select id="interviewMode" name="interviewMode" defaultValue={p.interviewMode} disabled={!phoneAvailable}>
+                <option value="in_browser">In-browser (candidate&apos;s own mic, right away)</option>
+                {phoneAvailable && <option value="phone_call">Phone call (AI calls the candidate, within calling hours)</option>}
+              </Select>
+            </Field>
             <Field label="CV weight in final score (%)" htmlFor="cvWeight" hint="The interview gets the remainder. Raise the interview share for roles where demonstrated communication matters more than paper credentials.">
               <Input id="cvWeight" name="cvWeight" type="number" min={0} max={100} defaultValue={Math.round(c.cvWeight * 100)} />
             </Field>

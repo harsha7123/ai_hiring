@@ -6,11 +6,19 @@ import { SubmitButton } from "@/components/client";
 import { startInterview, requestHuman } from "../actions";
 import { InterviewWidget } from "./interview-widget";
 
-export function ConsentForm({ token, consentText }: { token: string; consentText: string }) {
+export function ConsentForm({ token, consentText, phoneCall, callWindowLabel }: { token: string; consentText: string; phoneCall: boolean; callWindowLabel: string }) {
   const [state, action] = useActionState(startInterview, undefined);
   const [humanState, humanAction] = useActionState(requestHuman, undefined);
 
   if (state?.wsUrl) return <InterviewWidget token={token} wsUrl={state.wsUrl} />;
+
+  if (state?.waitingForCall)
+    return (
+      <Card className="mt-8 p-6">
+        <p className="font-medium">Thanks — you&apos;re confirmed.</p>
+        <p className="mt-1 text-sm text-ink-2">We&apos;ll call you on the number on file, {callWindowLabel}. Please keep your phone nearby and in a quiet spot when it rings.</p>
+      </Card>
+    );
 
   return (
     <Card className="mt-8 p-6">
@@ -22,10 +30,12 @@ export function ConsentForm({ token, consentText }: { token: string; consentText
           <span>{consentText}</span>
         </label>
         {state?.error && <p className="rounded-lg bg-bad-bg px-3 py-2 text-sm text-bad">{state.error}</p>}
-        <SubmitButton className="h-11 w-full" pendingText="Connecting…">
-          Start my interview now
+        <SubmitButton className="h-11 w-full" pendingText={phoneCall ? "Confirming…" : "Connecting…"}>
+          {phoneCall ? "Confirm — call me" : "Start my interview now"}
         </SubmitButton>
-        <p className="text-center text-xs text-ink-3">You&apos;ll need a quiet spot and about 10 minutes. Your browser will ask for microphone access.</p>
+        <p className="text-center text-xs text-ink-3">
+          {phoneCall ? `You'll need a quiet spot and about 10 minutes when we call, ${callWindowLabel}.` : "You'll need a quiet spot and about 10 minutes. Your browser will ask for microphone access."}
+        </p>
       </form>
       <form action={humanAction} className="mt-4 border-t border-line pt-4 text-center">
         <input type="hidden" name="token" value={token} />
