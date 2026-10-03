@@ -38,6 +38,10 @@ export default async function SettingsPage() {
   const webhookUrl = `${appUrl}/api/webhooks/omnidim/${org.webhookSecret}`;
   const keySource = org.omnidimApiKeyEnc ? "workspace" : process.env.OMNIDIM_API_KEY ? "platform" : null;
   const voiceReady = !!keySource && !!org.omnidimAgentId;
+  // A platform key auto-provisions every new workspace's agent at signup (see
+  // autoProvisionVoiceAgent) — no admin ever has to find or paste a key here
+  // unless this workspace wants its own separate OmniDimension account.
+  const autoProvisioned = keySource === "platform" && !org.omnidimApiKeyEnc;
 
   return (
     <div className="max-w-4xl space-y-6">
@@ -50,10 +54,20 @@ export default async function SettingsPage() {
           action={voiceReady ? <Badge tone="good">Connected</Badge> : <Badge tone="warn">Not configured</Badge>}
         />
         <div className="space-y-6 p-5">
-          <ol className="list-decimal space-y-1 pl-5 text-sm text-ink-2">
-            <li>Paste your OmniDimension API key (Dashboard → API). {keySource === "platform" && "A platform-wide key is already set on the server; a workspace key overrides it."}</li>
-            <li>Click <span className="font-medium text-ink">Create interview agent</span>. The agent is configured with AI disclosure, adaptive follow-ups and this webhook.</li>
-          </ol>
+          {autoProvisioned && voiceReady ? (
+            <p className="rounded-lg bg-sunken p-4 text-sm text-ink-2">
+              Set up automatically using the platform-wide OmniDimension key — nothing to configure here. Only paste a key below if this workspace needs its own separate OmniDimension account.
+            </p>
+          ) : autoProvisioned && !voiceReady ? (
+            <p className="rounded-lg bg-sunken p-4 text-sm text-ink-2">
+              A platform-wide OmniDimension key is set, but the agent couldn&apos;t be created automatically (the server may not have had a public APP_URL yet, or OmniDimension was briefly unreachable). Click <span className="font-medium text-ink">Create interview agent</span> below to retry — no key needed.
+            </p>
+          ) : (
+            <ol className="list-decimal space-y-1 pl-5 text-sm text-ink-2">
+              <li>Paste your OmniDimension API key (Dashboard → API).</li>
+              <li>Click <span className="font-medium text-ink">Create interview agent</span>. The agent is configured with AI disclosure, adaptive follow-ups and this webhook.</li>
+            </ol>
+          )}
           <ActionForm action={saveVoice} className="space-y-4">
             <Field label="API key" htmlFor="apiKey" hint={org.omnidimApiKeyEnc ? "A key is saved (encrypted with AES-256-GCM). Leave blank to keep it." : "Stored encrypted. Never shown again after saving."}>
               <Input id="apiKey" name="apiKey" type="password" autoComplete="off" placeholder={org.omnidimApiKeyEnc ? "••••••••••••  saved" : "Paste key"} />

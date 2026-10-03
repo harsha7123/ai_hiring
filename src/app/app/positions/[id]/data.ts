@@ -50,6 +50,17 @@ export async function loadCandidates(orgId: string, positionId: string) {
     );
 }
 
+/** How many CVs are in the company-wide library, and how many of those aren't yet candidates on this role. */
+export async function loadCvPoolStats(orgId: string, positionId: string) {
+  const [{ n: poolSize }] = await db.select({ n: sql<number>`count(*)::int` }).from(schema.cvDocuments).where(eq(schema.cvDocuments.orgId, orgId));
+  if (!poolSize) return { poolSize: 0, unmatched: 0 };
+  const [{ n: matched }] = await db
+    .select({ n: sql<number>`count(distinct ${schema.candidates.cvDocumentId})::int` })
+    .from(schema.candidates)
+    .where(eq(schema.candidates.positionId, positionId));
+  return { poolSize, unmatched: Math.max(0, poolSize - matched) };
+}
+
 export type CandidateRow = Awaited<ReturnType<typeof loadCandidates>>[number];
 export type PositionRow = Awaited<ReturnType<typeof loadPosition>>;
 

@@ -4,7 +4,7 @@
  */
 import { and, eq, inArray, isNull, lt, sql as dsql } from "drizzle-orm";
 import { db, schema, sql } from "@/db";
-import type { PositionConfig } from "@/db/schema";
+import type { CvProfile, PositionConfig } from "@/db/schema";
 import { extractText } from "@/lib/extract";
 import { knockoutReason, lexicalScore } from "@/lib/lexical";
 import { redactForScoring } from "@/lib/redact";
@@ -73,12 +73,15 @@ export async function runParseCv({ candidateId }: { candidateId: string }) {
     if (!text) text = await ai.ocrDocument(c.fileData, c.fileMime); // scanned PDF / image
     if (!text || text.trim().length < 100) throw new Error("No readable text found in this CV");
     const profile = await ai.structureProfile(text);
+    const phone = toE164(profile.phone) ?? profile.phone;
+    const cvDocumentId = await upsertCvDocument(c.orgId, { ...c, cvText: text, profile, name: profile.name, email: profile.email, phone });
     await setCandidate(candidateId, {
       cvText: text,
       profile,
       name: profile.name,
       email: profile.email,
-      phone: toE164(profile.phone) ?? profile.phone,
+      phone,
+      cvDocumentId,
       stage: "parsed",
       error: null,
     });
@@ -88,6 +91,79 @@ export async function runParseCv({ candidateId }: { candidateId: string }) {
     await setCandidate(candidateId, { stage: "failed", error: err instanceof Error ? err.message : String(err) });
     throw err;
   }
+}
+
+/**
+ * Keeps the org-wide CV library in sync with a freshly parsed CV. Deduped by
+ * email so the same person uploaded to five different roles over the years
+ * still counts as one library entry, always holding their latest CV. Returns
+ * null for a CV with no email — there's nothing reliable to dedupe it on, so
+ * it isn't added to the shared pool (it still screens fine for its own role).
+ */
+async function upsertCvDocument(
+  orgId: string,
+  doc: { name: string | null; email: string | null; phone: string | null; fileName: string; fileMime: string; fileData: Buffer | null; cvText: string; profile: CvProfile },
+): Promise<string | null> {
+  if (!doc.email) return null;
+  const values = {
+    orgId,
+    name: doc.name,
+    email: doc.email,
+    phone: doc.phone,
+    fileName: doc.fileName,
+    fileMime: doc.fileMime,
+    fileData: doc.fileData,
+    cvText: doc.cvText,
+    profile: doc.profile,
+  };
+  const [row] = await db
+    .insert(schema.cvDocuments)
+    .values(values)
+    .onConflictDoUpdate({
+      target: [schema.cvDocuments.orgId, schema.cvDocuments.email],
+      set: { ...values, updatedAt: new Date() },
+    })
+    .returning({ id: schema.cvDocuments.id });
+  return row.id;
+}
+
+/**
+ * Pulls every CV already in the company's library (uploaded to any other role)
+ * that isn't already a candidate on this position, and runs it through this
+ * role's screening too. Only meaningful once the role's spec is confirmed.
+ */
+export async function matchPoolToPosition(positionId: string, orgId: string): Promise<number> {
+  const p = await getPosition(positionId);
+  if (p.orgId !== orgId) throw new Error("Role not found");
+  const existing = await db
+    .select({ cvDocumentId: schema.candidates.cvDocumentId })
+    .from(schema.candidates)
+    .where(eq(schema.candidates.positionId, positionId));
+  const already = new Set(existing.map((r) => r.cvDocumentId).filter((id): id is string => id != null));
+  const pool = await db.select().from(schema.cvDocuments).where(eq(schema.cvDocuments.orgId, orgId));
+  const toAdd = pool.filter((d) => !already.has(d.id));
+  for (const d of toAdd) {
+    const [c] = await db
+      .insert(schema.candidates)
+      .values({
+        orgId,
+        positionId,
+        cvDocumentId: d.id,
+        name: d.name,
+        email: d.email,
+        phone: d.phone,
+        fileName: d.fileName,
+        fileMime: d.fileMime,
+        fileData: d.fileData,
+        cvText: d.cvText,
+        profile: d.profile,
+        stage: d.cvText ? "parsed" : "uploaded",
+      })
+      .returning({ id: schema.candidates.id });
+    if (d.cvText) await enqueue("score_cv", { candidateId: c.id }, { orgId });
+    else await enqueue("parse_cv", { candidateId: c.id }, { orgId });
+  }
+  return toAdd.length;
 }
 
 export async function runScoreCv({ candidateId }: { candidateId: string }) {

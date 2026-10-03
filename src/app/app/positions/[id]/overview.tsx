@@ -3,10 +3,20 @@ import { ActionForm, CopyButton, SubmitButton, Uploader } from "@/components/cli
 import { Badge, ButtonLink, Card, CardHeader, Empty, Notice, Stat, td, th } from "@/components/ui";
 import { INTERVIEW, STAGE } from "@/lib/labels";
 import { inviteLink } from "@/lib/pipeline";
-import { resendInvite, retryFailed, retrySpec, startInterviews } from "../../actions";
+import { resendInvite, retryFailed, retrySpec, scanCvLibrary, startInterviews } from "../../actions";
 import { funnel, type CandidateRow, type PositionRow } from "./data";
 
-export function Overview({ position: p, rows, editable }: { position: PositionRow; rows: CandidateRow[]; editable: boolean }) {
+export function Overview({
+  position: p,
+  rows,
+  editable,
+  cvPool,
+}: {
+  position: PositionRow;
+  rows: CandidateRow[];
+  editable: boolean;
+  cvPool: { poolSize: number; unmatched: number };
+}) {
   const f = funnel(rows);
   // Only offer "Start interviews" while the interview pool has room.
   const poolFull = rows.filter((r) => r.interviewStatus != null).length >= p.interviewPool;
@@ -43,6 +53,31 @@ export function Overview({ position: p, rows, editable }: { position: PositionRo
           <div className="p-5">
             <Uploader positionId={p.id} />
           </div>
+          {cvPool.poolSize > 0 && p.specConfirmed && (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line p-5">
+              <div>
+                <p className="text-sm text-ink-2">
+                  Your company&apos;s CV library has <span className="font-medium text-ink">{cvPool.poolSize}</span> CV{cvPool.poolSize === 1 ? "" : "s"} collected across all roles
+                  {cvPool.unmatched > 0 ? (
+                    <>
+                      , <span className="font-medium text-ink">{cvPool.unmatched}</span> not yet screened for this role.
+                    </>
+                  ) : (
+                    " — all already screened for this role."
+                  )}
+                </p>
+                <p className="mt-0.5 text-xs text-ink-3">Every CV anyone uploads, to any role, is kept here too, so you never have to ask someone to resend a CV you already have.</p>
+              </div>
+              {cvPool.unmatched > 0 && (
+                <ActionForm action={scanCvLibrary}>
+                  <input type="hidden" name="positionId" value={p.id} />
+                  <SubmitButton variant="secondary" pendingText="Scanning…">
+                    Scan company CV library
+                  </SubmitButton>
+                </ActionForm>
+              )}
+            </div>
+          )}
         </Card>
       )}
 

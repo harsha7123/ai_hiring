@@ -180,6 +180,32 @@ export type CvProfile = {
   gaps: string[];
 };
 
+/**
+ * A company-wide CV library, independent of any one role. Every CV uploaded to
+ * any position is kept here too (deduped by email), so a new role can be
+ * screened against every CV the company has ever collected, not just the ones
+ * freshly uploaded to it. A null email never dedupes (every such row is its own
+ * entry) since there's nothing reliable to key on.
+ */
+export const cvDocuments = pgTable(
+  "cv_documents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name"),
+    email: text("email"),
+    phone: text("phone"),
+    fileName: text("file_name").notNull(),
+    fileMime: text("file_mime").notNull(),
+    fileData: bytea("file_data"),
+    cvText: text("cv_text"),
+    profile: jsonb("profile").$type<CvProfile>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("cv_documents_org_idx").on(t.orgId), uniqueIndex("cv_documents_org_email_uq").on(t.orgId, t.email)],
+);
+
 export type CvAssessment = {
   dimensions: { name: string; score: number; rationale: string; evidence: string[] }[];
   mustHaveCoverage: { skill: string; present: boolean; evidence: string | null }[];
@@ -193,6 +219,9 @@ export const candidates = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     orgId: uuid("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
     positionId: uuid("position_id").notNull().references(() => positions.id, { onDelete: "cascade" }),
+    // Set when this candidate row was copied in from the company-wide CV
+    // library (see cvDocuments) rather than uploaded directly to this role.
+    cvDocumentId: uuid("cv_document_id").references(() => cvDocuments.id, { onDelete: "set null" }),
     name: text("name"),
     email: text("email"),
     phone: text("phone"),

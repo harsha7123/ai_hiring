@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import { can, requirePage } from "@/lib/auth/guard";
 import { AutoRefresh } from "@/components/client";
 import { Badge, cx, PageHeader } from "@/components/ui";
-import { isBusy, loadCandidates, loadPosition } from "./data";
+import { isBusy, loadCandidates, loadCvPoolStats, loadPosition } from "./data";
 import { Overview } from "./overview";
 import { Requirements } from "./requirements";
 import { Candidates } from "./candidates";
@@ -28,6 +28,7 @@ export default async function PositionPage({ params, searchParams }: PageProps<"
   const position = await loadPosition(ctx.org.id, id);
   const rows = await loadCandidates(ctx.org.id, id);
   const editable = can(ctx.role, "recruiter");
+  const cvPool = tab === "overview" ? await loadCvPoolStats(ctx.org.id, id) : null;
 
   return (
     <>
@@ -59,7 +60,7 @@ export default async function PositionPage({ params, searchParams }: PageProps<"
           </Link>
         ))}
       </nav>
-      {tab === "overview" && <Overview position={position} rows={rows} editable={editable} />}
+      {tab === "overview" && <Overview position={position} rows={rows} editable={editable} cvPool={cvPool!} />}
       {tab === "requirements" && <Requirements position={position} editable={editable} />}
       {tab === "candidates" && <Candidates position={position} rows={rows} editable={editable} stage={typeof sp.stage === "string" ? sp.stage : undefined} />}
       {tab === "shortlist" && <Shortlist position={position} rows={rows} />}

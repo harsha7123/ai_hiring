@@ -1,3 +1,5 @@
+import { eq } from "drizzle-orm";
+import { db, schema } from "@/db";
 import { decrypt } from "@/lib/crypto";
 
 /**
@@ -79,6 +81,30 @@ export async function createInterviewAgent(apiKey: string, opts: { orgName: stri
   const id = res.id ?? res.agent_id ?? res.data?.id;
   if (!id) throw new OmnidimError("OmniDimension did not return an agent id");
   return Number(id);
+}
+
+/**
+ * Called once right after a new organisation is created. With a platform-wide
+ * OMNIDIM_API_KEY set (so every company doesn't have to find, paste and verify
+ * its own OmniDimension key just to get started), this creates and saves the
+ * interview agent automatically — the workspace shows up in Settings already
+ * "Connected". Best-effort and silent: a missing key, an unreachable API, or no
+ * public APP_URL yet just leaves the workspace "Not configured", same as
+ * before this existed, and an admin can still set it up (or override with
+ * their own key) from Settings at any time. Must never fail signup.
+ */
+export async function autoProvisionVoiceAgent(org: { id: string; name: string; webhookSecret: string }): Promise<void> {
+  const apiKey = process.env.OMNIDIM_API_KEY;
+  if (!apiKey) return;
+  const appUrl = (process.env.APP_URL || "http://localhost:3000").replace(/\/$/, "");
+  const webhookUrl = `${appUrl}/api/webhooks/omnidim/${org.webhookSecret}`;
+  if (process.env.NODE_ENV === "production" && !webhookUrl.startsWith("https://")) return;
+  try {
+    const agentId = await createInterviewAgent(apiKey, { orgName: org.name, webhookUrl });
+    await db.update(schema.organizations).set({ omnidimAgentId: agentId }).where(eq(schema.organizations.id, org.id));
+  } catch (err) {
+    console.error(`auto-provisioning OmniDimension agent for org ${org.id} failed:`, err);
+  }
 }
 
 /**

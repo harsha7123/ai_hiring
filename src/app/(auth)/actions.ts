@@ -10,6 +10,7 @@ import { passwordProblem } from "@/lib/auth/password-policy";
 import { clientIp, destroySession, readSession, switchSessionOrg } from "@/lib/auth/session";
 import { supabaseServer } from "@/lib/supabase/server";
 import { friendlyAuthError } from "@/lib/supabase/errors";
+import { autoProvisionVoiceAgent } from "@/lib/omnidim";
 import type { FormState } from "@/components/client";
 
 const email = z.string().trim().toLowerCase().email("Enter a valid email address").max(200);
@@ -56,12 +57,14 @@ export async function signup(_: FormState, fd: FormData): Promise<FormState> {
     // same address. Too rare to auto-merge safely; ask for a different path.
     return { error: "Could not create the account for this email. If you previously had an account, contact your administrator." };
   }
+  const webhookSecret = randomToken(24);
   const [org] = await db
     .insert(schema.organizations)
-    .values({ name: orgName, webhookSecret: randomToken(24), settings: { retentionRecordingDays: 90, retentionRecordDays: 180 } })
+    .values({ name: orgName, webhookSecret, settings: { retentionRecordingDays: 90, retentionRecordDays: 180 } })
     .returning({ id: schema.organizations.id });
   await db.insert(schema.memberships).values({ userId: data.user.id, orgId: org.id, role: "owner" });
   await audit({ orgId: org.id, userId: data.user.id, action: "auth.signup", ip: await clientIp() });
+  await autoProvisionVoiceAgent({ id: org.id, name: orgName, webhookSecret });
 
   if (!data.session) return { ok: CONFIRM_MSG };
   redirect("/app");
@@ -140,11 +143,13 @@ export async function createWorkspace(_: FormState, fd: FormData): Promise<FormS
   const orgName = String(fd.get("orgName") ?? "").trim();
   if (orgName.length < 2) return { error: "Enter an organisation name." };
 
+  const webhookSecret = randomToken(24);
   const [org] = await db
     .insert(schema.organizations)
-    .values({ name: orgName, webhookSecret: randomToken(24), settings: { retentionRecordingDays: 90, retentionRecordDays: 180 } })
+    .values({ name: orgName, webhookSecret, settings: { retentionRecordingDays: 90, retentionRecordDays: 180 } })
     .returning({ id: schema.organizations.id });
   await db.insert(schema.memberships).values({ userId: user.id, orgId: org.id, role: "owner" }).onConflictDoNothing();
   await audit({ orgId: org.id, userId: user.id, action: "auth.signup", ip: await clientIp() });
+  await autoProvisionVoiceAgent({ id: org.id, name: orgName, webhookSecret });
   redirect("/app");
 }

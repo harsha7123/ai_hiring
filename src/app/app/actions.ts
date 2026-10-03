@@ -11,7 +11,7 @@ import { AuthError, requireAction, type Ctx } from "@/lib/auth/guard";
 import { encrypt, randomToken, sha256 } from "@/lib/crypto";
 import { enqueue } from "@/lib/jobs/queue";
 import { createInterviewAgent, resolveOmnidimKey, testKey } from "@/lib/omnidim";
-import { queueScoringForPosition, rerankPosition, selectCandidate, selectForInterview } from "@/lib/pipeline";
+import { matchPoolToPosition, queueScoringForPosition, rerankPosition, selectCandidate, selectForInterview } from "@/lib/pipeline";
 import type { FormState } from "@/components/client";
 
 const appUrl = () => (process.env.APP_URL || "http://localhost:3000").replace(/\/$/, "");
@@ -179,6 +179,17 @@ export const savePositionConfig = guarded(async (fd) => {
   await audit({ orgId: ctx.org.id, userId: ctx.user.id, action: "position.config_updated", target: p.id, meta: config });
   refresh();
   return { ok: "Settings saved." };
+});
+
+/** Screens every CV already in the company's library (from any other role) against this role too. */
+export const scanCvLibrary = guarded(async (fd) => {
+  const ctx = await requireAction("recruiter");
+  const p = await ownPosition(ctx, String(fd.get("positionId")));
+  if (!p.specConfirmed) return { error: "Confirm the requirements first." };
+  const n = await matchPoolToPosition(p.id, ctx.org.id);
+  await audit({ orgId: ctx.org.id, userId: ctx.user.id, action: "position.scan_cv_library", target: p.id, meta: { added: n } });
+  refresh();
+  return n ? { ok: `${n} CVs from your company library added and being screened for this role.` } : { ok: "No new CVs to add — every library CV is already linked to this role." };
 });
 
 export const startInterviews = guarded(async (fd) => {

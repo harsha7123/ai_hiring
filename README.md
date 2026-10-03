@@ -3,7 +3,7 @@
 Multi-tenant web app that implements the proposal end to end:
 
 1. **Setup** — recruiter pastes a JD; the AI model extracts a requirement spec that the recruiter edits and confirms. Knockouts, weights, custom questions, shortlist size, interview pool and a hard interview spend cap are set per role.
-2. **Stage 1: CV ranking** — bulk upload (PDF, DOCX, TXT, scanned images with OCR fallback). Every CV is structured, passed through a fast keyword pass, then scored on a fixed rubric. Every sub-score keeps only evidence quotes that are verified to exist in the CV.
+2. **Stage 1: CV ranking** — bulk upload (PDF, DOCX, TXT, scanned images with OCR fallback). Every CV is structured, passed through a fast keyword pass, then scored on a fixed rubric. Every sub-score keeps only evidence quotes that are verified to exist in the CV. Every CV is also kept in a company-wide library (deduped by email) — any later role can pull in and re-score every CV the company has ever collected, not just what was freshly uploaded to it.
 3. **Stage 2: consent** — top N candidates get an invite (email via Resend and/or SMS/WhatsApp via Twilio, both optional — without either, the recruiter copies and shares the link manually) to a consent page. Unanswered invites are re-sent up to 3 times, then the candidate is marked unreachable.
 4. **Stage 3: AI voice interview (in-browser)** — the candidate consents, then talks to the agent right there in their own browser tab over their own microphone — no phone call, no app to install. Questions are generated per candidate from the gap between their CV and the JD; the agent discloses it is an AI and that the conversation is recorded. The interview completes and gets scored from the transcript the browser itself captured, so it never depends on a webhook arriving.
 5. **Stage 4: re-rank and reports** — the transcript is scored on a fixed rubric and combined with the CV score using the role's weights. The report includes a recommendation, strengths and concerns with verbatim quotes, skill verification, logistics and suggested probes. Unsupported claims are dropped before the report is released.
@@ -55,6 +55,8 @@ npm run dev                       # migrations run automatically on boot
 `AI_DEMO_MODE=true` swaps the AI model for deterministic heuristics so the whole CV/interview pipeline can run offline. Use it only for testing — it does not need `OPENAI_API_KEY` at all, but Supabase credentials are still required for sign-in.
 
 ## Connecting OmniDimension
+
+With `OMNIDIM_API_KEY` set on the server (platform-wide), every new workspace gets its interview agent created automatically the moment it signs up — nobody has to find, paste, or verify an OmniDimension key themselves. A workspace can still paste its own key in **Settings → Voice interviews** if it needs a separate OmniDimension account (a workspace key overrides the platform key). To set this up from scratch:
 
 1. Set `OMNIDIM_API_KEY` on the server (platform-wide), or have each workspace paste its own key in **Settings → Voice interviews**. A workspace key overrides the platform key.
 2. Make sure `APP_URL` is your public `https://` address — a secure context is required for the browser to grant microphone access (plain `http://localhost` is exempt, for local dev).
