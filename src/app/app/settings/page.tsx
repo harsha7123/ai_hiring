@@ -1,22 +1,13 @@
 import type { Metadata } from "next";
 import { and, desc, eq, gt, isNull } from "drizzle-orm";
 import { db, schema } from "@/db";
-import { can, requirePage } from "@/lib/auth/guard";
+import { requirePage } from "@/lib/auth/guard";
 import { messagingConfigured } from "@/lib/messaging";
 import { emailConfigured } from "@/lib/email";
-import { ActionForm, CopyButton, SubmitButton } from "@/components/client";
+import { ActionForm, SubmitButton } from "@/components/client";
 import { Badge, Card, CardHeader, Field, Input, PageHeader, Select, td, th } from "@/components/ui";
 import { fmtDate } from "@/lib/labels";
-import {
-  clearVoiceKey,
-  inviteMember,
-  provisionAgent,
-  removeMember,
-  revokeInvite,
-  rotateWebhookSecret,
-  saveVoice,
-  updateOrg,
-} from "../actions";
+import { inviteMember, removeMember, revokeInvite, updateOrg } from "../actions";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -34,14 +25,7 @@ export default async function SettingsPage() {
     .where(and(eq(schema.invites.orgId, ctx.org.id), isNull(schema.invites.acceptedAt), gt(schema.invites.expiresAt, new Date())))
     .orderBy(desc(schema.invites.createdAt));
 
-  const appUrl = (process.env.APP_URL || "http://localhost:3000").replace(/\/$/, "");
-  const webhookUrl = `${appUrl}/api/webhooks/omnidim/${org.webhookSecret}`;
-  const keySource = org.omnidimApiKeyEnc ? "workspace" : process.env.OMNIDIM_API_KEY ? "platform" : null;
-  const voiceReady = !!keySource && !!org.omnidimAgentId;
-  // A platform key auto-provisions every new workspace's agent at signup (see
-  // autoProvisionVoiceAgent) — no admin ever has to find or paste a key here
-  // unless this workspace wants its own separate OmniDimension account.
-  const autoProvisioned = keySource === "platform" && !org.omnidimApiKeyEnc;
+  const voiceReady = !!org.omnidimAgentId;
 
   return (
     <div className="max-w-4xl space-y-6">
@@ -50,82 +34,14 @@ export default async function SettingsPage() {
       <Card>
         <CardHeader
           title="Voice interviews · OmniDimension"
-          description="Candidates interview in their own browser, using their own microphone. OmniDimension hosts the agent; no phone number is needed."
-          action={voiceReady ? <Badge tone="good">Connected</Badge> : <Badge tone="warn">Not configured</Badge>}
+          description="Candidates interview in their own browser (or by phone, if enabled) using an AI voice assistant. Configured entirely on the server — there's nothing to set up here."
+          action={voiceReady ? <Badge tone="good">Connected</Badge> : <Badge tone="warn">Not yet connected</Badge>}
         />
-        <div className="space-y-6 p-5">
-          {autoProvisioned && voiceReady ? (
-            <p className="rounded-lg bg-sunken p-4 text-sm text-ink-2">
-              Set up automatically using the platform-wide OmniDimension key — nothing to configure here. Only paste a key below if this workspace needs its own separate OmniDimension account.
-            </p>
-          ) : autoProvisioned && !voiceReady ? (
-            <p className="rounded-lg bg-sunken p-4 text-sm text-ink-2">
-              A platform-wide OmniDimension key is set, but the agent couldn&apos;t be created automatically (the server may not have had a public APP_URL yet, or OmniDimension was briefly unreachable). Click <span className="font-medium text-ink">Create interview agent</span> below to retry — no key needed.
-            </p>
-          ) : (
-            <ol className="list-decimal space-y-1 pl-5 text-sm text-ink-2">
-              <li>Paste your OmniDimension API key (Dashboard → API).</li>
-              <li>Click <span className="font-medium text-ink">Create interview agent</span>. The agent is configured with AI disclosure, adaptive follow-ups and this webhook.</li>
-            </ol>
-          )}
-          <ActionForm action={saveVoice} className="space-y-4">
-            <Field label="API key" htmlFor="apiKey" hint={org.omnidimApiKeyEnc ? "A key is saved (encrypted with AES-256-GCM). Leave blank to keep it." : "Stored encrypted. Never shown again after saving."}>
-              <Input id="apiKey" name="apiKey" type="password" autoComplete="off" placeholder={org.omnidimApiKeyEnc ? "••••••••••••  saved" : "Paste key"} />
-            </Field>
-            <Field label="Agent ID" htmlFor="agentId" hint="Filled automatically when you create the agent; or use an agent you built yourself.">
-              <Input id="agentId" name="agentId" type="number" defaultValue={org.omnidimAgentId ?? ""} />
-            </Field>
-            <Field
-              label="Phone number ID (optional)"
-              htmlFor="fromNumberId"
-              hint={
-                org.omnidimFromNumberId
-                  ? "Set — roles can be switched to phone-call interviews in their own Settings tab."
-                  : "Your OmniDimension outbound Caller ID (Dashboard → Phone Numbers). Only needed to offer phone-call interviews instead of in-browser ones for a role."
-              }
-            >
-              <Input id="fromNumberId" name="fromNumberId" type="number" defaultValue={org.omnidimFromNumberId ?? ""} />
-            </Field>
-            <div className="flex flex-wrap justify-end gap-2">
-              <SubmitButton pendingText="Verifying…">Save voice settings</SubmitButton>
-            </div>
-          </ActionForm>
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-5">
-            <ActionForm action={provisionAgent}>
-              <SubmitButton variant="secondary" pendingText="Creating agent…">
-                {org.omnidimAgentId ? "Create a new interview agent" : "Create interview agent"}
-              </SubmitButton>
-            </ActionForm>
-            {org.omnidimApiKeyEnc && (
-              <form action={clearVoiceKey}>
-                <SubmitButton variant="ghost" size="sm" confirm="Remove the saved OmniDimension key?">
-                  Remove saved key
-                </SubmitButton>
-              </form>
-            )}
-          </div>
-          <div className="rounded-lg bg-sunken p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-xs font-medium uppercase tracking-wide text-ink-3">Post-call webhook URL</div>
-                <code className="mt-1 block truncate font-mono text-xs text-ink-2">{webhookUrl}</code>
-              </div>
-              <div className="flex shrink-0 gap-2">
-                <CopyButton value={webhookUrl} />
-                {can(ctx.role, "owner") && (
-                  <form action={rotateWebhookSecret}>
-                    <SubmitButton variant="ghost" size="sm" confirm="Rotate the webhook secret? Existing agents must be updated with the new URL.">
-                      Rotate
-                    </SubmitButton>
-                  </form>
-                )}
-              </div>
-            </div>
-            <p className="mt-2 text-xs text-ink-3">
-              Keep this URL private: the secret in it authenticates OmniDimension. Interviews are completed from the transcript the candidate&apos;s own browser captures, so a missed or delayed webhook never blocks scoring — this URL only backfills the recording link and sentiment when available.
-            </p>
-          </div>
-        </div>
+        {!voiceReady && (
+          <p className="p-5 text-sm text-ink-3">
+            Voice interviews aren&apos;t connected yet. This is set up by whoever manages the server (OMNIDIM_API_KEY), not here — ask them to check it&apos;s configured.
+          </p>
+        )}
       </Card>
 
       <Card>

@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { db, schema } from "@/db";
 import { decrypt } from "@/lib/crypto";
 
@@ -84,14 +84,15 @@ export async function createInterviewAgent(apiKey: string, opts: { orgName: stri
 }
 
 /**
- * Called once right after a new organisation is created. With a platform-wide
- * OMNIDIM_API_KEY set (so every company doesn't have to find, paste and verify
- * its own OmniDimension key just to get started), this creates and saves the
- * interview agent automatically — the workspace shows up in Settings already
- * "Connected". Best-effort and silent: a missing key, an unreachable API, or no
- * public APP_URL yet just leaves the workspace "Not configured", same as
- * before this existed, and an admin can still set it up (or override with
- * their own key) from Settings at any time. Must never fail signup.
+ * Voice interviews are configured purely from server env vars — no admin ever
+ * pastes a key, agent ID or phone number into the app. OMNIDIM_API_KEY is
+ * required for anything to work; OMNIDIM_FROM_NUMBER_ID is optional and only
+ * needed to offer phone-call interviews. Called once right after a new
+ * organisation is created, and again periodically (ensureVoiceAgentsProvisioned,
+ * from the worker tick) to retry any org this didn't yet work for.
+ * Best-effort and silent: a missing key, an unreachable API, or no public
+ * APP_URL yet just leaves the workspace "not configured" until the next retry.
+ * Must never fail signup.
  */
 export async function autoProvisionVoiceAgent(org: { id: string; name: string; webhookSecret: string }): Promise<void> {
   const apiKey = process.env.OMNIDIM_API_KEY;
@@ -101,9 +102,37 @@ export async function autoProvisionVoiceAgent(org: { id: string; name: string; w
   if (process.env.NODE_ENV === "production" && !webhookUrl.startsWith("https://")) return;
   try {
     const agentId = await createInterviewAgent(apiKey, { orgName: org.name, webhookUrl });
-    await db.update(schema.organizations).set({ omnidimAgentId: agentId }).where(eq(schema.organizations.id, org.id));
+    const fromNumberId = Number(process.env.OMNIDIM_FROM_NUMBER_ID);
+    await db
+      .update(schema.organizations)
+      .set({ omnidimAgentId: agentId, ...(Number.isFinite(fromNumberId) ? { omnidimFromNumberId: fromNumberId } : {}) })
+      .where(eq(schema.organizations.id, org.id));
   } catch (err) {
     console.error(`auto-provisioning OmniDimension agent for org ${org.id} failed:`, err);
+  }
+}
+
+/**
+ * Backend-only retry, run periodically from the worker tick: provisions the
+ * agent for any org that missed it at signup (API was briefly down, etc.), and
+ * backfills the phone number ID for any org that predates OMNIDIM_FROM_NUMBER_ID
+ * being set. Cheap no-op once every org is fully provisioned.
+ */
+export async function ensureVoiceAgentsProvisioned(): Promise<void> {
+  if (!process.env.OMNIDIM_API_KEY) return;
+  const needsAgent = await db
+    .select({ id: schema.organizations.id, name: schema.organizations.name, webhookSecret: schema.organizations.webhookSecret })
+    .from(schema.organizations)
+    .where(isNull(schema.organizations.omnidimAgentId))
+    .limit(5);
+  for (const org of needsAgent) await autoProvisionVoiceAgent(org);
+
+  const fromNumberId = Number(process.env.OMNIDIM_FROM_NUMBER_ID);
+  if (Number.isFinite(fromNumberId)) {
+    await db
+      .update(schema.organizations)
+      .set({ omnidimFromNumberId: fromNumberId })
+      .where(and(isNull(schema.organizations.omnidimFromNumberId), isNull(schema.organizations.omnidimApiKeyEnc)));
   }
 }
 

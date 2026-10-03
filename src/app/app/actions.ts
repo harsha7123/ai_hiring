@@ -8,9 +8,8 @@ import { db, schema } from "@/db";
 import type { RequirementSpec } from "@/db/schema";
 import { audit } from "@/lib/audit";
 import { AuthError, requireAction, type Ctx } from "@/lib/auth/guard";
-import { encrypt, randomToken, sha256 } from "@/lib/crypto";
+import { randomToken, sha256 } from "@/lib/crypto";
 import { enqueue } from "@/lib/jobs/queue";
-import { createInterviewAgent, resolveOmnidimKey, testKey } from "@/lib/omnidim";
 import { matchPoolToPosition, queueScoringForPosition, rerankPosition, selectCandidate, selectForInterview } from "@/lib/pipeline";
 import type { FormState } from "@/components/client";
 
@@ -345,60 +344,9 @@ export const updateOrg = guarded(async (fd) => {
   return { ok: "Saved." };
 });
 
-export const saveVoice = guarded(async (fd) => {
-  const ctx = await requireAction("admin");
-  const apiKey = String(fd.get("apiKey") ?? "").trim();
-  const agentId = optNum(fd.get("agentId"));
-  const fromNumberId = optNum(fd.get("fromNumberId"));
-  if (apiKey) {
-    try {
-      await testKey(apiKey);
-    } catch (err) {
-      return { error: `OmniDimension rejected the key: ${err instanceof Error ? err.message : err}` };
-    }
-  }
-  await db
-    .update(schema.organizations)
-    .set({
-      ...(apiKey ? { omnidimApiKeyEnc: encrypt(apiKey) } : {}),
-      omnidimAgentId: agentId,
-      omnidimFromNumberId: fromNumberId,
-    })
-    .where(eq(schema.organizations.id, ctx.org.id));
-  await audit({ orgId: ctx.org.id, userId: ctx.user.id, action: "org.voice_updated", meta: { keyChanged: !!apiKey, agentId, fromNumberId } });
-  refresh();
-  return { ok: "Voice settings saved." };
-});
-
-export async function clearVoiceKey() {
-  const ctx = await requireAction("admin");
-  await db.update(schema.organizations).set({ omnidimApiKeyEnc: null }).where(eq(schema.organizations.id, ctx.org.id));
-  await audit({ orgId: ctx.org.id, userId: ctx.user.id, action: "org.voice_key_removed" });
-  refresh();
-}
-
-export const provisionAgent = guarded(async () => {
-  const ctx = await requireAction("admin");
-  const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, ctx.org.id));
-  const key = resolveOmnidimKey(org);
-  if (!key) return { error: "Add an OmniDimension API key first (or set OMNIDIM_API_KEY on the server)." };
-  const webhookUrl = `${appUrl()}/api/webhooks/omnidim/${org.webhookSecret}`;
-  if (!/^https:\/\//.test(webhookUrl) && process.env.NODE_ENV === "production") {
-    return { error: "APP_URL must be a public https:// address so OmniDimension can deliver call results." };
-  }
-  const agentId = await createInterviewAgent(key, { orgName: org.name, webhookUrl });
-  await db.update(schema.organizations).set({ omnidimAgentId: agentId }).where(eq(schema.organizations.id, org.id));
-  await audit({ orgId: org.id, userId: ctx.user.id, action: "org.voice_agent_created", meta: { agentId } });
-  refresh();
-  return { ok: `Interview agent #${agentId} created and connected.` };
-});
-
-export async function rotateWebhookSecret() {
-  const ctx = await requireAction("owner");
-  await db.update(schema.organizations).set({ webhookSecret: randomToken(24) }).where(eq(schema.organizations.id, ctx.org.id));
-  await audit({ orgId: ctx.org.id, userId: ctx.user.id, action: "org.webhook_rotated" });
-  refresh();
-}
+// Voice interview configuration (OmniDimension key, agent, phone number) is
+// server-only now — see autoProvisionVoiceAgent / ensureVoiceAgentsProvisioned
+// in lib/omnidim.ts. There is deliberately no admin-facing form for it.
 
 // ---------- Team ----------
 

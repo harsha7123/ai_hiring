@@ -1,5 +1,6 @@
 import { sql } from "@/db";
 import * as pipeline from "@/lib/pipeline";
+import { ensureVoiceAgentsProvisioned } from "@/lib/omnidim";
 import { claim, complete, fail, pruneDone, requeueStale, type Job, type JobType } from "./queue";
 
 const HANDLERS: Record<JobType, (payload: never) => Promise<void>> = {
@@ -62,6 +63,7 @@ async function tick() {
       await pipeline.dispatchDueInterviews();
       await pipeline.syncDispatchedCalls();
       await pipeline.retryInvites();
+      await ensureVoiceAgentsProvisioned();
       if (Date.now() - lastRetention > 6 * 3600_000) {
         lastRetention = Date.now();
         await pipeline.applyRetention();
