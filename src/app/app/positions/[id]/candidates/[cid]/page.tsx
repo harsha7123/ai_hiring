@@ -23,15 +23,19 @@ const SUBSTANTIATED = {
 export default async function CandidatePage({ params }: PageProps<"/app/positions/[id]/candidates/[cid]">) {
   const ctx = await requirePage();
   const { id, cid } = await params;
-  const position = await loadPosition(ctx.org.id, id);
   if (!/^[0-9a-f-]{36}$/i.test(cid)) notFound();
-  const [c] = await db
-    .select()
-    .from(schema.candidates)
-    .where(and(eq(schema.candidates.id, cid), eq(schema.candidates.orgId, ctx.org.id), eq(schema.candidates.positionId, id)));
+  const [position, [c]] = await Promise.all([
+    loadPosition(ctx.org.id, id),
+    db
+      .select()
+      .from(schema.candidates)
+      .where(and(eq(schema.candidates.id, cid), eq(schema.candidates.orgId, ctx.org.id), eq(schema.candidates.positionId, id))),
+  ]);
   if (!c) notFound();
-  const [iv] = await db.select().from(schema.interviews).where(eq(schema.interviews.candidateId, c.id));
-  const [report] = await db.select().from(schema.reports).where(eq(schema.reports.candidateId, c.id));
+  const [[iv], [report]] = await Promise.all([
+    db.select().from(schema.interviews).where(eq(schema.interviews.candidateId, c.id)),
+    db.select().from(schema.reports).where(eq(schema.reports.candidateId, c.id)),
+  ]);
   const r = report?.content;
   const editable = can(ctx.role, "recruiter");
   const busy = c.stage === "uploaded" || (iv?.status === "completed" && c.interviewScore == null);

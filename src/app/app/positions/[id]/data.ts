@@ -50,6 +50,11 @@ export async function loadCandidates(orgId: string, positionId: string) {
     );
 }
 
+export async function loadPhoneAvailable(orgId: string): Promise<boolean> {
+  const [org] = await db.select({ omnidimFromNumberId: schema.organizations.omnidimFromNumberId }).from(schema.organizations).where(eq(schema.organizations.id, orgId));
+  return !!org?.omnidimFromNumberId;
+}
+
 /** How many CVs are in the company-wide library, and how many of those aren't yet candidates on this role. */
 export async function loadCvPoolStats(orgId: string, positionId: string) {
   const [{ n: poolSize }] = await db.select({ n: sql<number>`count(*)::int` }).from(schema.cvDocuments).where(eq(schema.cvDocuments.orgId, orgId));

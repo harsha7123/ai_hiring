@@ -13,17 +13,20 @@ export const metadata: Metadata = { title: "Settings" };
 
 export default async function SettingsPage() {
   const ctx = await requirePage("admin");
-  const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, ctx.org.id));
-  const members = await db
-    .select({ id: schema.users.id, name: schema.users.name, email: schema.users.email, role: schema.memberships.role, lastLoginAt: schema.users.lastLoginAt })
-    .from(schema.memberships)
-    .innerJoin(schema.users, eq(schema.users.id, schema.memberships.userId))
-    .where(eq(schema.memberships.orgId, ctx.org.id));
-  const invites = await db
-    .select()
-    .from(schema.invites)
-    .where(and(eq(schema.invites.orgId, ctx.org.id), isNull(schema.invites.acceptedAt), gt(schema.invites.expiresAt, new Date())))
-    .orderBy(desc(schema.invites.createdAt));
+  // Independent queries — run concurrently instead of stacking round-trips sequentially.
+  const [[org], members, invites] = await Promise.all([
+    db.select().from(schema.organizations).where(eq(schema.organizations.id, ctx.org.id)),
+    db
+      .select({ id: schema.users.id, name: schema.users.name, email: schema.users.email, role: schema.memberships.role, lastLoginAt: schema.users.lastLoginAt })
+      .from(schema.memberships)
+      .innerJoin(schema.users, eq(schema.users.id, schema.memberships.userId))
+      .where(eq(schema.memberships.orgId, ctx.org.id)),
+    db
+      .select()
+      .from(schema.invites)
+      .where(and(eq(schema.invites.orgId, ctx.org.id), isNull(schema.invites.acceptedAt), gt(schema.invites.expiresAt, new Date())))
+      .orderBy(desc(schema.invites.createdAt)),
+  ]);
 
   const voiceReady = !!org.omnidimAgentId;
 

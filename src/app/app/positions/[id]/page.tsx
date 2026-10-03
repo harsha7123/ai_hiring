@@ -1,11 +1,9 @@
 import Link from "next/link";
 import type { Metadata } from "next";
-import { eq } from "drizzle-orm";
-import { db, schema } from "@/db";
 import { can, requirePage } from "@/lib/auth/guard";
 import { AutoRefresh } from "@/components/client";
 import { Badge, cx, PageHeader } from "@/components/ui";
-import { isBusy, loadCandidates, loadCvPoolStats, loadPosition } from "./data";
+import { isBusy, loadCandidates, loadCvPoolStats, loadPhoneAvailable, loadPosition } from "./data";
 import { Overview } from "./overview";
 import { Requirements } from "./requirements";
 import { Candidates } from "./candidates";
@@ -27,15 +25,14 @@ export default async function PositionPage({ params, searchParams }: PageProps<"
   const { id } = await params;
   const sp = await searchParams;
   const tab = TABS.some(([k]) => k === sp.tab) ? (sp.tab as (typeof TABS)[number][0]) : "overview";
-  const position = await loadPosition(ctx.org.id, id);
-  const rows = await loadCandidates(ctx.org.id, id);
+  // Independent queries — run them concurrently instead of stacking round-trips sequentially.
+  const [position, rows, cvPool, phoneAvailable] = await Promise.all([
+    loadPosition(ctx.org.id, id),
+    loadCandidates(ctx.org.id, id),
+    tab === "overview" ? loadCvPoolStats(ctx.org.id, id) : Promise.resolve(null),
+    tab === "settings" ? loadPhoneAvailable(ctx.org.id) : Promise.resolve(false),
+  ]);
   const editable = can(ctx.role, "recruiter");
-  const cvPool = tab === "overview" ? await loadCvPoolStats(ctx.org.id, id) : null;
-  let phoneAvailable = false;
-  if (tab === "settings") {
-    const [org] = await db.select({ omnidimFromNumberId: schema.organizations.omnidimFromNumberId }).from(schema.organizations).where(eq(schema.organizations.id, ctx.org.id));
-    phoneAvailable = !!org?.omnidimFromNumberId;
-  }
 
   return (
     <>

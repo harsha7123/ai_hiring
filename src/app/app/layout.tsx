@@ -25,13 +25,13 @@ export default async function AppLayout({ children }: LayoutProps<"/app">) {
             {can(ctx.role, "admin") && <NavLink href="/app/settings">Settings</NavLink>}
             {can(ctx.role, "admin") && <NavLink href="/app/audit">Audit</NavLink>}
           </nav>
-          <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-3">
+          <div className="ml-auto flex min-w-0 shrink items-center gap-2 sm:gap-3">
             {orgs.length > 1 ? (
-              <form action={switchOrg} className="flex items-center">
+              <form action={switchOrg} className="flex min-w-0 items-center">
                 <select
                   name="orgId"
                   defaultValue={ctx.org.id}
-                  className="h-8 rounded-lg border border-line-2 bg-surface px-2 text-sm"
+                  className="h-8 w-24 min-w-0 rounded-lg border border-line-2 bg-surface px-2 text-sm sm:w-auto sm:max-w-[12rem]"
                   aria-label="Switch organisation"
                 >
                   {orgs.map((o) => (
@@ -40,10 +40,10 @@ export default async function AppLayout({ children }: LayoutProps<"/app">) {
                     </option>
                   ))}
                 </select>
-                <button className="ml-1 h-8 rounded-lg px-2 text-sm text-ink-2 hover:bg-sunken">Switch</button>
+                <button className="ml-1 h-8 shrink-0 rounded-lg px-2 text-sm text-ink-2 hover:bg-sunken">Switch</button>
               </form>
             ) : (
-              <span className="hidden text-sm text-ink-2 sm:inline">{ctx.org.name}</span>
+              <span className="hidden truncate text-sm text-ink-2 sm:inline">{ctx.org.name}</span>
             )}
             <span className="hidden h-4 w-px bg-line-2 sm:inline" />
             <span className="hidden text-sm text-ink-3 md:inline" title={ctx.user.email}>
