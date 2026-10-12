@@ -40,6 +40,17 @@ export default async function SignupPage() {
           Sign in
         </Link>
       </p>
+      <p className="mt-6 text-xs text-ink-3">
+        By creating a workspace you agree to the{" "}
+        <Link href="/terms" className="underline underline-offset-2 hover:text-ink">
+          terms
+        </Link>{" "}
+        and{" "}
+        <Link href="/privacy" className="underline underline-offset-2 hover:text-ink">
+          privacy notice
+        </Link>
+        .
+      </p>
     </>
   );
 }

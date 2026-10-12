@@ -38,12 +38,23 @@ const nextConfig: NextConfig = {
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "X-Frame-Options", value: "DENY" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          // Isolates our windows from cross-origin pages that open or are opened by them.
+          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
           // microphone=(self): the in-browser AI interview needs mic access on our own
           // pages. Still blocked for any cross-origin iframe, and camera/geolocation/
           // payment stay fully blocked since nothing in the app uses them.
           { key: "Permissions-Policy", value: "camera=(), microphone=(self), geolocation=(), payment=()" },
         ],
       },
+      // Candidate and team invite links carry a secret token in the path: never
+      // send it anywhere as a Referer, and never let a shared cache keep these pages.
+      ...["/i/:path*", "/invite/:path*"].map((source) => ({
+        source,
+        headers: [
+          { key: "Referrer-Policy", value: "no-referrer" },
+          { key: "Cache-Control", value: "private, no-store" },
+        ],
+      })),
     ];
   },
 };

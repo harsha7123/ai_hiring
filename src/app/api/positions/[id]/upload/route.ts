@@ -1,9 +1,12 @@
+import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { and, eq, sql } from "drizzle-orm";
 import { db, schema } from "@/db";
 import { AuthError, requireAction } from "@/lib/auth/guard";
 import { MAX_CV_BYTES, sniffMime } from "@/lib/extract";
 import { enqueue } from "@/lib/jobs/queue";
+import { hit, LIMITS } from "@/lib/rate-limit";
+import { storeCv } from "@/lib/storage";
 
 const MAX_CVS_PER_ROLE = Number(process.env.MAX_CVS_PER_ROLE ?? 5000);
 
@@ -11,17 +14,29 @@ const MAX_CVS_PER_ROLE = Number(process.env.MAX_CVS_PER_ROLE ?? 5000);
 function sameOrigin(req: Request) {
   const origin = req.headers.get("origin");
   if (!origin) return false;
-  return new URL(origin).host === (req.headers.get("x-forwarded-host") ?? req.headers.get("host"));
+  try {
+    return new URL(origin).host === (req.headers.get("x-forwarded-host") ?? req.headers.get("host"));
+  } catch {
+    return false;
+  }
 }
 
 export async function POST(req: Request, { params }: RouteContext<"/api/positions/[id]/upload">) {
   if (!sameOrigin(req)) return NextResponse.json({ error: "Bad origin" }, { status: 403 });
+  // Multipart overhead is small; anything far beyond one CV is refused before parsing.
+  if (Number(req.headers.get("content-length")) > MAX_CV_BYTES + 256 * 1024) {
+    return NextResponse.json({ error: "File is larger than 10 MB" }, { status: 413 });
+  }
   let ctx;
   try {
     ctx = await requireAction("recruiter");
   } catch (err) {
     if (err instanceof AuthError) return NextResponse.json({ error: err.message }, { status: 401 });
     throw err;
+  }
+  const limit = await hit(`upload:user:${ctx.user.id}`, LIMITS.uploadPerUser);
+  if (!limit.ok) {
+    return NextResponse.json({ error: "Upload limit reached for this hour. Try again later." }, { status: 429, headers: { "Retry-After": String(limit.retryAfterSec) } });
   }
   const { id } = await params;
   const [position] = await db
@@ -45,10 +60,9 @@ export async function POST(req: Request, { params }: RouteContext<"/api/position
   const mime = sniffMime(buf, fileName);
   if (!mime) return NextResponse.json({ error: "Unsupported file type (use PDF, DOCX, TXT or an image)" }, { status: 400 });
 
-  const [c] = await db
-    .insert(schema.candidates)
-    .values({ orgId: ctx.org.id, positionId: id, fileName, fileMime: mime, fileData: buf })
-    .returning({ id: schema.candidates.id });
-  await enqueue("parse_cv", { candidateId: c.id }, { orgId: ctx.org.id });
-  return NextResponse.json({ id: c.id });
+  const candidateId = randomUUID();
+  const stored = await storeCv(ctx.org.id, "candidates", candidateId, buf, mime);
+  await db.insert(schema.candidates).values({ id: candidateId, orgId: ctx.org.id, positionId: id, fileName, fileMime: mime, ...stored });
+  await enqueue("parse_cv", { candidateId }, { orgId: ctx.org.id });
+  return NextResponse.json({ id: candidateId });
 }

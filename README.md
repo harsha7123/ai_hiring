@@ -35,6 +35,20 @@ The platform ranks and recommends; it never rejects. Recruiters can promote or r
 - Bias controls: name, contact details, DOB/age, gender, marital status, religion, caste and nationality lines are redacted before scoring
 - Audit log of sign-ins, configuration changes, candidate decisions, consent, downloads and deletions
 - Retention: recording links (default 90 days after the interview) and candidate records plus their CV-library copies (default 180 days without activity) are purged automatically. Admins can hard-delete a person on request — that also removes their CV-library copy and their applications to other roles.
+- Rate limits (shared across instances, in Postgres) on sign-in (per IP and per email), sign-up, password reset, candidate interview links, uploads and the webhook. Limits live in `src/lib/rate-limit.ts`.
+- CV files are kept in a private Supabase Storage bucket, read only server-side with the service key, and only served to signed-in members of the owning workspace.
+- Invite pages send no `Referer` and are never cached, so their secret tokens can't leak to other sites or shared caches.
+- Password reset by email; confirmation and reset links land on `/auth/callback`, which only redirects to allow-listed in-app paths.
+- Startup refuses to run in production with missing or unsafe configuration (no encryption key, non-https `APP_URL`, …).
+
+## Operations
+
+- **Logs** are one JSON object per line (`t`, `level`, `msg`, plus fields), so the hosting platform's log search can filter by `level=error`, `jobId`, `orgId`, etc.
+- **Alerts**: set `ERROR_WEBHOOK_URL` to a Slack or Discord incoming webhook. Uncaught request errors, permanently failed jobs and scheduler failures are posted there (each distinct error at most every 10 minutes).
+- **Health**: `/api/health` is the liveness check (process + database). Point an uptime monitor (UptimeRobot, Better Stack, …) at `/api/health?deep=1`, which also fails when no worker has checked in for 5 minutes or jobs are stuck in the queue.
+- **Deploys**: the standalone worker (`npm run worker`) drains running jobs on SIGTERM; jobs interrupted any other way are retried automatically.
+- **Backups**: use Supabase Pro's daily backups (and point-in-time recovery if needed). With files in Storage, database backups stay small.
+- Step-by-step production setup: [docs/DEPLOY.md](docs/DEPLOY.md).
 
 ## Setting up Supabase
 
@@ -42,7 +56,9 @@ The platform ranks and recommends; it never rejects. Recruiters can promote or r
 2. **Project Settings → API**: copy the **Project URL** into `NEXT_PUBLIC_SUPABASE_URL`, the **anon public** key into `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and the **service_role** key into `SUPABASE_SERVICE_ROLE_KEY` (keep this one server-only — never commit it or ship it to the browser).
 3. **Project Settings → Database**: copy the connection string (URI, transaction pooler) into `DATABASE_URL`, and set `DATABASE_SSL=true`. This is the same Postgres database the app's own tables (`organizations`, `positions`, `candidates`, …) live in — `npm run db:migrate` / the app's own startup migration creates them in the `public` schema alongside Supabase's `auth` schema.
 4. **Authentication → Providers → Email**: leave "Confirm email" **on** for a public-facing deployment (recommended), or turn it **off** for faster internal testing — sign-up works either way; with it on, new users see a "check your email" message and must click the confirmation link before their first sign-in.
-5. **Authentication → URL Configuration**: set the **Site URL** to your `APP_URL`.
+5. **Authentication → URL Configuration**: set the **Site URL** to your `APP_URL`, and add `<APP_URL>/auth/callback` under **Redirect URLs** (used by confirmation and password-reset emails).
+6. **Authentication → Emails → Templates** (recommended): in the "Confirm signup" and "Reset password" templates, change the link to `{{ .SiteURL }}/auth/callback?token_hash={{ .TokenHash }}&type=email&next=/app` and `{{ .SiteURL }}/auth/callback?token_hash={{ .TokenHash }}&type=recovery&next=/reset-password` respectively. Supabase's default links only work in the same browser that asked for the email; these work on any device.
+7. **Project Settings → JWT Keys**: switch to **asymmetric signing keys**. Sessions are then verified locally on every request instead of with a call to Supabase — a noticeable speed-up.
 
 No Supabase client code runs in the browser — every call goes through this app's server actions, so nothing beyond the two public keys above needs to reach the client.
 
@@ -52,10 +68,11 @@ No Supabase client code runs in the browser — every call goes through this app
 npm install
 cp .env.example .env.local        # fill in DATABASE_URL, APP_ENCRYPTION_KEY, the Supabase keys; AI_DEMO_MODE=true to run without an OpenAI key
 npm run dev                       # migrations run automatically on boot
-npm test                          # unit tests (scoring rules, redaction, quote grounding, call parsing)
+npm test                          # unit tests (scoring rules, redaction, quote grounding, call parsing, config, redirects)
+INTEGRATION_DATABASE_URL=postgres://… npm run test:int   # the real pipeline against a throwaway Postgres
 ```
 
-CI (`.github/workflows/ci.yml`) runs typecheck, lint, tests and a production build on every push and pull request.
+CI (`.github/workflows/ci.yml`) runs typecheck, lint, unit tests, the integration suite against a Postgres service, a production build, and a check that every schema change has a migration — on every push and pull request.
 
 `AI_DEMO_MODE=true` swaps the AI model for deterministic heuristics so the whole CV/interview pipeline can run offline. Use it only for testing — it does not need `OPENAI_API_KEY` at all, but Supabase credentials are still required for sign-in.
 
@@ -73,7 +90,7 @@ By default interviews are browser voice sessions (OmniDimension's Sessions API) 
 
 ## Deployment
 
-The app is a single Docker image (`Dockerfile`) that serves the web app and runs the worker and scheduler. It needs PostgreSQL (Supabase's own, or any other) and the environment variables in `.env.example`.
+The app is a single Docker image (`Dockerfile`) that serves the web app and runs the worker and scheduler. It needs PostgreSQL (Supabase's own, or any other) and the environment variables in `.env.example`. **Recommended: Railway + Supabase Pro (Mumbai)** — `railway.json` is already set up; follow [docs/DEPLOY.md](docs/DEPLOY.md).
 
 | Option | When | Notes |
 | --- | --- | --- |

@@ -216,7 +216,10 @@ export const cvDocuments = pgTable(
     phone: text("phone"),
     fileName: text("file_name").notNull(),
     fileMime: text("file_mime").notNull(),
+    // The CV file lives either in object storage (filePath, see lib/storage.ts)
+    // or, without storage configured or before migration, inline in fileData.
     fileData: bytea("file_data"),
+    filePath: text("file_path"),
     cvText: text("cv_text"),
     profile: jsonb("profile").$type<CvProfile>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -247,6 +250,7 @@ export const candidates = pgTable(
     fileName: text("file_name").notNull(),
     fileMime: text("file_mime").notNull(),
     fileData: bytea("file_data"),
+    filePath: text("file_path"),
     cvText: text("cv_text"),
     profile: jsonb("profile").$type<CvProfile>(),
     assessment: jsonb("assessment").$type<CvAssessment>(),
@@ -365,6 +369,22 @@ export const jobs = pgTable(
   },
   (t) => [index("jobs_pending_idx").on(t.status, t.runAt)],
 );
+
+/**
+ * Fixed-window request counters for rate limiting (lib/rate-limit.ts). Kept in
+ * Postgres so limits hold across every web instance, not per process.
+ */
+export const rateLimits = pgTable("rate_limits", {
+  key: text("key").primaryKey(),
+  windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+  count: integer("count").notNull(),
+});
+
+/** Last time each worker process checked in, so health checks can tell a stopped worker from an idle one. */
+export const workerHeartbeats = pgTable("worker_heartbeats", {
+  id: text("id").primaryKey(),
+  lastSeen: timestamp("last_seen", { withTimezone: true }).notNull(),
+});
 
 export const auditLogs = pgTable(
   "audit_logs",

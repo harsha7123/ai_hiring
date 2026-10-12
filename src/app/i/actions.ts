@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { clientIp } from "@/lib/auth/session";
+import { enforce, LIMITS } from "@/lib/rate-limit";
 import { recordConsent, recordHumanRequest, startWebInterview } from "@/lib/pipeline";
 import type { FormState } from "@/components/client";
 
@@ -15,13 +16,20 @@ const TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/;
  */
 export type StartState = { error?: string; wsUrl?: string; waitingForCall?: boolean };
 
+/** Each start creates a paid voice session, so starts are limited per link and per network. */
+async function limitCandidate(token: string, ip: string | null) {
+  await enforce([`cand:token:${token}`, LIMITS.candidateActionPerToken], [`cand:ip:${ip}`, LIMITS.candidateActionPerIp]);
+}
+
 export async function startInterview(_: StartState | undefined, fd: FormData): Promise<StartState> {
   const token = String(fd.get("token") ?? "");
   const consentText = String(fd.get("consentText") ?? "").slice(0, 2000);
   if (!TOKEN_RE.test(token)) return { error: "Invalid invitation link." };
   if (fd.get("consent") !== "yes") return { error: "Please confirm your consent to continue." };
   try {
-    const { mode } = await recordConsent({ token, ip: await clientIp(), consentText });
+    const ip = await clientIp();
+    await limitCandidate(token, ip);
+    const { mode } = await recordConsent({ token, ip, consentText });
     if (mode === "phone_call") return { waitingForCall: true };
     const { wsUrl } = await startWebInterview(token);
     return { wsUrl };
@@ -34,7 +42,9 @@ export async function requestHuman(_: FormState, fd: FormData): Promise<FormStat
   const token = String(fd.get("token") ?? "");
   if (!TOKEN_RE.test(token)) return { error: "Invalid invitation link." };
   try {
-    await recordHumanRequest(token, await clientIp());
+    const ip = await clientIp();
+    await limitCandidate(token, ip);
+    await recordHumanRequest(token, ip);
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Could not save your response." };
   }

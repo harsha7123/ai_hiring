@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Logo } from "@/components/brand";
 import { ButtonLink } from "@/components/ui";
 
@@ -83,7 +84,14 @@ export default function Home() {
       <footer className="border-t border-line">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-6 text-sm text-ink-3">
           <span>© {new Date().getFullYear()} Shortlist</span>
-          <span>Data encrypted in transit and at rest</span>
+          <span className="flex gap-5">
+            <Link href="/privacy" className="hover:text-ink">
+              Privacy
+            </Link>
+            <Link href="/terms" className="hover:text-ink">
+              Terms
+            </Link>
+          </span>
         </div>
       </footer>
     </div>

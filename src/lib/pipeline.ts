@@ -15,6 +15,9 @@ import { messagingConfigured, sendInvite, toE164 } from "@/lib/messaging";
 import { emailConfigured, isValidEmail, sendEmail } from "@/lib/email";
 import { createWebSession, dispatchCall, listCallLogs, parseCallResult, phoneKey, resolveOmnidimKey, type CallResult } from "@/lib/omnidim";
 import { audit } from "@/lib/audit";
+import { randomUUID } from "node:crypto";
+import { loadCv, removeCvFiles, storageEnabled, storeCv } from "@/lib/storage";
+import { log, reportError } from "@/lib/log";
 import { browserTranscriptIsPlausible, callWindow, combinedScore, fmtHour, MIN_TRANSCRIPT_CHARS, nextCallSlot } from "@/lib/interview-rules";
 
 export { combinedScore };
@@ -80,15 +83,17 @@ export async function queueScoringForPosition(positionId: string, orgId: string)
 
 export async function runParseCv({ candidateId }: { candidateId: string }) {
   const c = await getCandidate(candidateId);
-  if (!c || !c.fileData) return;
+  if (!c) return;
+  const file = await loadCv(c);
+  if (!file) return;
   try {
-    let text = await extractText(c.fileData, c.fileMime);
-    if (!text) text = await ai.ocrDocument(c.fileData, c.fileMime); // scanned PDF / image
+    let text = await extractText(file, c.fileMime);
+    if (!text) text = await ai.ocrDocument(file, c.fileMime); // scanned PDF / image
     if (!text || text.trim().length < 100) throw new Error("No readable text found in this CV");
     const profile = await ai.structureProfile(text);
     const phone = toE164(profile.phone) ?? profile.phone;
     const email = normEmail(profile.email);
-    const cvDocumentId = await upsertCvDocument(c.orgId, { ...c, cvText: text, profile, name: profile.name, email, phone });
+    const cvDocumentId = await upsertCvDocument(c.orgId, { ...c, file, cvText: text, profile, name: profile.name, email, phone });
     await setCandidate(candidateId, {
       cvText: text,
       profile,
@@ -116,7 +121,7 @@ export async function runParseCv({ candidateId }: { candidateId: string }) {
  */
 async function upsertCvDocument(
   orgId: string,
-  doc: { name: string | null; email: string | null; phone: string | null; fileName: string; fileMime: string; fileData: Buffer | null; cvText: string; profile: CvProfile },
+  doc: { name: string | null; email: string | null; phone: string | null; fileName: string; fileMime: string; file: Buffer; cvText: string; profile: CvProfile },
 ): Promise<string | null> {
   const email = normEmail(doc.email);
   if (!email) return null;
@@ -127,7 +132,6 @@ async function upsertCvDocument(
     phone: doc.phone,
     fileName: doc.fileName,
     fileMime: doc.fileMime,
-    fileData: doc.fileData,
     cvText: doc.cvText,
     profile: doc.profile,
   };
@@ -139,6 +143,10 @@ async function upsertCvDocument(
       set: { ...values, updatedAt: new Date() },
     })
     .returning({ id: schema.cvDocuments.id });
+  // The library keeps its own copy of the file (overwriting any older CV for
+  // this person), so deleting an application never breaks the library entry.
+  const stored = await storeCv(orgId, "library", row.id, doc.file, doc.fileMime);
+  await db.update(schema.cvDocuments).set(stored).where(eq(schema.cvDocuments.id, row.id));
   return row.id;
 }
 
@@ -158,30 +166,39 @@ export async function matchPoolToPosition(positionId: string, orgId: string): Pr
   // Also match on email: a CV uploaded straight to this role that's still being
   // parsed has no cvDocumentId yet, and mustn't be added a second time from the library.
   const alreadyEmails = new Set(existing.map((r) => normEmail(r.email)).filter((e): e is string => e != null));
-  const pool = await db.select().from(schema.cvDocuments).where(eq(schema.cvDocuments.orgId, orgId));
+  // Ids and emails only: file contents are loaded one at a time below, never the whole library at once.
+  const pool = await db
+    .select({ id: schema.cvDocuments.id, email: schema.cvDocuments.email })
+    .from(schema.cvDocuments)
+    .where(eq(schema.cvDocuments.orgId, orgId));
   const toAdd = pool.filter((d) => !already.has(d.id) && !(d.email && alreadyEmails.has(normEmail(d.email)!)));
-  for (const d of toAdd) {
-    const [c] = await db
-      .insert(schema.candidates)
-      .values({
-        orgId,
-        positionId,
-        cvDocumentId: d.id,
-        name: d.name,
-        email: d.email,
-        phone: d.phone,
-        fileName: d.fileName,
-        fileMime: d.fileMime,
-        fileData: d.fileData,
-        cvText: d.cvText,
-        profile: d.profile,
-        stage: d.cvText ? "parsed" : "uploaded",
-      })
-      .returning({ id: schema.candidates.id });
-    if (d.cvText) await enqueue("score_cv", { candidateId: c.id }, { orgId });
-    else await enqueue("parse_cv", { candidateId: c.id }, { orgId });
+  let added = 0;
+  for (const { id: docId } of toAdd) {
+    const [d] = await db.select().from(schema.cvDocuments).where(eq(schema.cvDocuments.id, docId));
+    const file = d ? await loadCv(d) : null;
+    if (!d || !file) continue;
+    const candidateId = randomUUID();
+    const stored = await storeCv(orgId, "candidates", candidateId, file, d.fileMime);
+    await db.insert(schema.candidates).values({
+      id: candidateId,
+      orgId,
+      positionId,
+      cvDocumentId: d.id,
+      name: d.name,
+      email: d.email,
+      phone: d.phone,
+      fileName: d.fileName,
+      fileMime: d.fileMime,
+      ...stored,
+      cvText: d.cvText,
+      profile: d.profile,
+      stage: d.cvText ? "parsed" : "uploaded",
+    });
+    if (d.cvText) await enqueue("score_cv", { candidateId }, { orgId });
+    else await enqueue("parse_cv", { candidateId }, { orgId });
+    added++;
   }
-  return toAdd.length;
+  return added;
 }
 
 export async function runScoreCv({ candidateId }: { candidateId: string }) {
@@ -656,7 +673,7 @@ export async function syncDispatchedCalls() {
     try {
       logs = (await listCallLogs(key, org.omnidimAgentId)).map(parseCallResult);
     } catch (err) {
-      console.error("call log sync failed", err);
+      reportError("call log sync failed", err, { orgId: org.id });
       continue;
     }
     for (const { interview: iv, candidate: c } of rows) {
@@ -776,7 +793,7 @@ async function notifyNewlyShortlisted(positionId: string) {
       : "The next step is a conversation with our hiring team — they will reach out directly to arrange a time.";
     const body = `Hi ${first}, good news — based on your application and interview, you've been shortlisted for the ${p.title} role at ${org.name}.\n\n${next}`;
     const result = await sendEmail(c.email, `You've been shortlisted for ${p.title} at ${org.name}`, body);
-    if (!result.sent) console.error(`shortlist email failed for candidate ${c.id}:`, result.error);
+    if (!result.sent) log.warn("shortlist email failed", { candidateId: c.id, error: result.error });
   }
 }
 
@@ -796,12 +813,13 @@ export async function applyRetention() {
     const purged = await db
       .delete(schema.candidates)
       .where(and(eq(schema.candidates.orgId, org.id), lt(schema.candidates.updatedAt, recordCutoff)))
-      .returning({ id: schema.candidates.id });
+      .returning({ id: schema.candidates.id, filePath: schema.candidates.filePath });
     // The company-wide CV library holds its own copy of every CV and must expire too.
     const purgedCvs = await db
       .delete(schema.cvDocuments)
       .where(and(eq(schema.cvDocuments.orgId, org.id), lt(schema.cvDocuments.updatedAt, recordCutoff)))
-      .returning({ id: schema.cvDocuments.id });
+      .returning({ id: schema.cvDocuments.id, filePath: schema.cvDocuments.filePath });
+    await removeCvFiles([...purged, ...purgedCvs].map((r) => r.filePath));
     if (purged.length || purgedCvs.length) {
       await audit({ orgId: org.id, action: "retention.purged_candidates", meta: { count: purged.length, cvLibrary: purgedCvs.length } });
     }
@@ -834,7 +852,63 @@ export async function eraseCandidateData(orgId: string, candidateId: string): Pr
   const removed = await db
     .delete(schema.candidates)
     .where(and(eq(schema.candidates.orgId, orgId), or(...matches)))
-    .returning({ positionId: schema.candidates.positionId });
-  if (docIds.size) await db.delete(schema.cvDocuments).where(and(eq(schema.cvDocuments.orgId, orgId), inArray(schema.cvDocuments.id, [...docIds])));
+    .returning({ positionId: schema.candidates.positionId, filePath: schema.candidates.filePath });
+  const removedDocs = docIds.size
+    ? await db
+        .delete(schema.cvDocuments)
+        .where(and(eq(schema.cvDocuments.orgId, orgId), inArray(schema.cvDocuments.id, [...docIds])))
+        .returning({ filePath: schema.cvDocuments.filePath })
+    : [];
+  await removeCvFiles([...removed, ...removedDocs].map((r) => r.filePath));
   return [...new Set(removed.map((r) => r.positionId))];
+}
+
+/**
+ * Moves CV files still stored inline in Postgres (uploaded before storage was
+ * configured) into object storage, a small batch per scheduler tick, then
+ * clears the inline copy. No-op once everything has moved, or without storage.
+ */
+export async function migrateCvFilesToStorage(batch = 20): Promise<number> {
+  if (!storageEnabled()) return 0;
+  let moved = 0;
+  const cands = await db
+    .select({ id: schema.candidates.id, orgId: schema.candidates.orgId, fileMime: schema.candidates.fileMime })
+    .from(schema.candidates)
+    .where(and(dsql`${schema.candidates.fileData} is not null`, isNull(schema.candidates.filePath)))
+    .limit(batch);
+  for (const c of cands) {
+    const [row] = await db.select({ fileData: schema.candidates.fileData }).from(schema.candidates).where(eq(schema.candidates.id, c.id));
+    if (!row?.fileData) continue;
+    const stored = await storeCv(c.orgId, "candidates", c.id, row.fileData, c.fileMime);
+    await db.update(schema.candidates).set(stored).where(eq(schema.candidates.id, c.id));
+    moved++;
+  }
+  const docs = await db
+    .select({ id: schema.cvDocuments.id, orgId: schema.cvDocuments.orgId, fileMime: schema.cvDocuments.fileMime })
+    .from(schema.cvDocuments)
+    .where(and(dsql`${schema.cvDocuments.fileData} is not null`, isNull(schema.cvDocuments.filePath)))
+    .limit(batch);
+  for (const d of docs) {
+    const [row] = await db.select({ fileData: schema.cvDocuments.fileData }).from(schema.cvDocuments).where(eq(schema.cvDocuments.id, d.id));
+    if (!row?.fileData) continue;
+    const stored = await storeCv(d.orgId, "library", d.id, row.fileData, d.fileMime);
+    await db.update(schema.cvDocuments).set(stored).where(eq(schema.cvDocuments.id, d.id));
+    moved++;
+  }
+  if (moved) log.info("moved CV files to storage", { moved });
+  return moved;
+}
+
+/** Deletes a role and everything under it, including stored CV files (which a database cascade can't reach). */
+export async function deletePositionData(orgId: string, positionId: string): Promise<boolean> {
+  const files = await db
+    .select({ filePath: schema.candidates.filePath })
+    .from(schema.candidates)
+    .where(and(eq(schema.candidates.positionId, positionId), eq(schema.candidates.orgId, orgId)));
+  const deleted = await db
+    .delete(schema.positions)
+    .where(and(eq(schema.positions.id, positionId), eq(schema.positions.orgId, orgId)))
+    .returning({ id: schema.positions.id });
+  if (deleted.length) await removeCvFiles(files.map((f) => f.filePath));
+  return deleted.length > 0;
 }

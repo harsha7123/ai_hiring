@@ -4,6 +4,7 @@ import { db, schema } from "@/db";
 import { audit } from "@/lib/audit";
 import { AuthError, requireAction } from "@/lib/auth/guard";
 import { ACCEPTED_MIME } from "@/lib/extract";
+import { loadCv } from "@/lib/storage";
 
 export async function GET(_: Request, { params }: RouteContext<"/api/candidates/[id]/cv">) {
   let ctx;
@@ -16,14 +17,15 @@ export async function GET(_: Request, { params }: RouteContext<"/api/candidates/
   const { id } = await params;
   if (!/^[0-9a-f-]{36}$/i.test(id)) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const [c] = await db
-    .select({ fileName: schema.candidates.fileName, fileMime: schema.candidates.fileMime, fileData: schema.candidates.fileData })
+    .select({ fileName: schema.candidates.fileName, fileMime: schema.candidates.fileMime, fileData: schema.candidates.fileData, filePath: schema.candidates.filePath })
     .from(schema.candidates)
     .where(and(eq(schema.candidates.id, id), eq(schema.candidates.orgId, ctx.org.id)));
-  if (!c?.fileData) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  const file = c ? await loadCv(c) : null;
+  if (!c || !file) return NextResponse.json({ error: "Not found" }, { status: 404 });
   await audit({ orgId: ctx.org.id, userId: ctx.user.id, action: "candidate.cv_downloaded", target: id });
   const ext = ACCEPTED_MIME[c.fileMime] ?? "bin";
   const name = c.fileName.toLowerCase().endsWith(`.${ext}`) ? c.fileName : `${c.fileName}.${ext}`;
-  return new NextResponse(new Uint8Array(c.fileData), {
+  return new NextResponse(new Uint8Array(file), {
     headers: {
       "Content-Type": c.fileMime,
       // Always download: never render untrusted uploads inline on our origin.
