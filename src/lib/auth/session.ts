@@ -3,11 +3,13 @@ import { headers } from "next/headers";
 import { desc, eq, and, isNull, gt } from "drizzle-orm";
 import { db, schema } from "@/db";
 import { sha256 } from "@/lib/crypto";
+import { ipFromHeaders } from "@/lib/rate-limit";
+import { log } from "@/lib/log";
 import { supabaseServer } from "@/lib/supabase/server";
 
 export async function clientIp(): Promise<string | null> {
   const h = await headers();
-  return h.get("x-forwarded-for")?.split(",")[0]?.trim() || h.get("x-real-ip") || null;
+  return ipFromHeaders((n) => h.get(n));
 }
 
 export type AuthUser = { id: string; email: string; name: string };
@@ -17,7 +19,7 @@ export type AuthUser = { id: string; email: string; name: string };
  * checks the token's signature (locally against the project's JWKS for
  * asymmetric signing keys, or via the Auth server for legacy symmetric ones),
  * unlike getSession(), which trusts whatever the cookie says. That matters
- * because not every route goes through the proxy — /api/* route handlers
+ * because not every route goes through the proxy â€” /api/* route handlers
  * read the cookie directly, so this check is the only thing standing between
  * a forged cookie and tenant data.
  */
@@ -34,7 +36,7 @@ export async function verifiedUser(): Promise<AuthUser | null> {
 /**
  * Keeps our local profile row (used for joins/audit display) in sync with Supabase
  * auth. Swallows a same-email/different-id conflict rather than 500ing every page
- * load — that can only happen if a Supabase account was deleted and recreated with
+ * load â€” that can only happen if a Supabase account was deleted and recreated with
  * the same address, which needs a person to untangle, not a silent auto-merge.
  */
 export async function ensureUserProfile(user: AuthUser) {
@@ -44,7 +46,7 @@ export async function ensureUserProfile(user: AuthUser) {
       .values({ id: user.id, email: user.email, name: user.name, lastLoginAt: new Date() })
       .onConflictDoUpdate({ target: schema.users.id, set: { email: user.email, lastLoginAt: new Date() } });
   } catch (err) {
-    console.error(`profile sync failed for ${user.id} <${user.email}>:`, err instanceof Error ? err.message : err);
+    log.warn("profile sync failed", { userId: user.id, err });
   }
 }
 
@@ -72,12 +74,12 @@ export async function acceptInviteForUser(token: string, user: AuthUser): Promis
 }
 
 /**
- * ensureUserProfile only does something the first time a user is seen — not on
+ * ensureUserProfile only does something the first time a user is seen â€” not on
  * every one of the dozens of page loads and actions a session makes per minute.
  * This process stays warm between requests (unlike a cold-start serverless
  * function), so a small in-memory "checked recently" cache is enough to skip it
  * on every request but the first in a window, without a database read. Worst
- * case (a fresh deploy, or the TTL elapsing) it just runs again — never unsafe,
+ * case (a fresh deploy, or the TTL elapsing) it just runs again â€” never unsafe,
  * purely a latency optimization.
  */
 const recentlyChecked = new Map<string, number>();

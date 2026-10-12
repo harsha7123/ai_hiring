@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { eq } from "drizzle-orm";
 import { db, schema } from "@/db";
 import { Card } from "@/components/ui";
@@ -92,7 +93,12 @@ export default async function InvitePage({ params }: PageProps<"/i/[token]">) {
           <p className="mt-1 text-sm text-ink-3">Thank you for your time. The recruiting team will be in touch.</p>
         </Card>
       )}
-      <p className="mt-10 text-xs text-ink-3">Your data is processed only for this application and deleted on request or after the retention period.</p>
+      <p className="mt-10 text-xs text-ink-3">
+        Your data is processed only for this application and deleted on request or after the retention period.{" "}
+        <Link href="/privacy" className="underline underline-offset-2 hover:text-ink">
+          Privacy notice
+        </Link>
+      </p>
     </>,
   );
 }

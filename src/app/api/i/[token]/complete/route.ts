@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { completeWebInterview } from "@/lib/pipeline";
+import { readBodyCapped } from "@/lib/http";
+import { hit, ipFromHeaders, LIMITS } from "@/lib/rate-limit";
 
 /**
  * The candidate's browser posts here the moment its OmniDimension session ends,
@@ -12,9 +14,17 @@ export async function POST(req: Request, { params }: RouteContext<"/api/i/[token
   const { token } = await params;
   if (!/^[A-Za-z0-9_-]{20,64}$/.test(token)) return NextResponse.json({ error: "Invalid link" }, { status: 404 });
 
+  const ip = ipFromHeaders((n) => req.headers.get(n));
+  for (const [key, limit] of [[`cand:token:${token}`, LIMITS.candidateActionPerToken], [`cand:ip:${ip}`, LIMITS.candidateActionPerIp]] as const) {
+    const r = await hit(key, limit);
+    if (!r.ok) return NextResponse.json({ error: "Too many requests" }, { status: 429, headers: { "Retry-After": String(r.retryAfterSec) } });
+  }
+
+  const raw = await readBodyCapped(req, 300_000);
+  if (raw === null) return NextResponse.json({ error: "Body too large" }, { status: 413 });
   let body: unknown;
   try {
-    body = await req.json();
+    body = JSON.parse(raw);
   } catch {
     return NextResponse.json({ error: "Invalid body" }, { status: 400 });
   }

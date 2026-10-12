@@ -1,5 +1,9 @@
+import type { Instrumentation } from "next";
+
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
+  const { checkConfigOrExit } = await import("./lib/env");
+  checkConfigOrExit();
   if (process.env.RUN_MIGRATIONS !== "false") {
     const { runMigrations } = await import("./lib/migrate");
     await runMigrations();
@@ -11,3 +15,10 @@ export async function register() {
     startWorker();
   }
 }
+
+/** Every uncaught error in a page, route handler or server action ends up here: log it and alert. */
+export const onRequestError: Instrumentation.onRequestError = async (err, request, context) => {
+  if (process.env.NEXT_RUNTIME !== "nodejs") return;
+  const { reportError } = await import("./lib/log");
+  reportError("request failed", err, { path: request.path, method: request.method, route: context.routePath, kind: context.routeType });
+};

@@ -10,7 +10,8 @@ import { audit } from "@/lib/audit";
 import { AuthError, requireAction, type Ctx } from "@/lib/auth/guard";
 import { randomToken, sha256 } from "@/lib/crypto";
 import { enqueue } from "@/lib/jobs/queue";
-import { eraseCandidateData, matchPoolToPosition, queueScoringForPosition, rerankPosition, selectCandidate, selectForInterview } from "@/lib/pipeline";
+import { reportError } from "@/lib/log";
+import { deletePositionData, eraseCandidateData, matchPoolToPosition, queueScoringForPosition, rerankPosition, selectCandidate, selectForInterview } from "@/lib/pipeline";
 import { autoProvisionVoiceAgent } from "@/lib/omnidim";
 import type { FormState } from "@/components/client";
 
@@ -40,8 +41,11 @@ function guarded(fn: (fd: FormData) => Promise<FormState | void>) {
     } catch (err) {
       if (err instanceof AuthError) return { error: err.message };
       if (err && typeof err === "object" && "digest" in err && String(err.digest).startsWith("NEXT_REDIRECT")) throw err;
-      console.error(err);
-      return { error: err instanceof Error ? err.message : "Something went wrong" };
+      reportError("server action failed", err);
+      // Database driver errors carry a SQLSTATE `code` and can reveal schema
+      // details; show those as a generic message. Our own thrown errors are written for users.
+      const internal = !(err instanceof Error) || "code" in err;
+      return { error: internal ? "Something went wrong. Please try again." : err.message };
     }
   };
 }
@@ -220,7 +224,7 @@ export async function setPositionStatus(fd: FormData) {
 export async function deletePosition(fd: FormData) {
   const ctx = await requireAction("admin");
   const p = await ownPosition(ctx, String(fd.get("positionId")));
-  await db.delete(schema.positions).where(eq(schema.positions.id, p.id));
+  await deletePositionData(ctx.org.id, p.id);
   await audit({ orgId: ctx.org.id, userId: ctx.user.id, action: "position.deleted", target: p.id, meta: { title: p.title } });
   redirect("/app");
 }

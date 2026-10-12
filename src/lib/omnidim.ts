@@ -1,6 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db, schema } from "@/db";
 import { decrypt } from "@/lib/crypto";
+import { reportError } from "@/lib/log";
 
 /**
  * OmniDimension REST client (https://docs.omnidim.io/docs/api-reference).
@@ -84,7 +85,7 @@ export async function createInterviewAgent(apiKey: string, opts: { orgName: stri
 }
 
 /**
- * Voice interviews are configured purely from server env vars — no admin ever
+ * Voice interviews are configured purely from server env vars â€” no admin ever
  * pastes a key, agent ID or phone number into the app. OMNIDIM_API_KEY is
  * required for anything to work; OMNIDIM_FROM_NUMBER_ID is optional and only
  * needed to offer phone-call interviews. Called once right after a new
@@ -108,7 +109,7 @@ export async function autoProvisionVoiceAgent(org: { id: string; name: string; w
       .set({ omnidimAgentId: agentId, ...(Number.isFinite(fromNumberId) ? { omnidimFromNumberId: fromNumberId } : {}) })
       .where(eq(schema.organizations.id, org.id));
   } catch (err) {
-    console.error(`auto-provisioning OmniDimension agent for org ${org.id} failed:`, err);
+    reportError("voice agent provisioning failed", err, { orgId: org.id });
   }
 }
 

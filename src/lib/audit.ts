@@ -1,4 +1,5 @@
 import { db, schema } from "@/db";
+import { reportError } from "./log";
 
 export async function audit(entry: {
   orgId?: string | null;
@@ -18,6 +19,6 @@ export async function audit(entry: {
       ip: entry.ip ?? null,
     });
   } catch (err) {
-    console.error("audit log write failed", err);
+    reportError("audit log write failed", err, { action: entry.action });
   }
 }
