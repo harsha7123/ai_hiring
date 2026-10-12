@@ -29,7 +29,7 @@ export default async function NoWorkspacePage() {
         <div className="w-full max-w-sm">
           <h1 className="text-2xl font-semibold tracking-tight">You&apos;re signed in, but not part of a workspace yet</h1>
           <p className="mt-1.5 text-sm text-ink-2">
-            Signed in as {user.email}. If you were expecting an invite, ask whoever invited you to check the email address they used. Or create your own
+            Signed in as {user.email}. If you were invited to a workspace, open the invite link you were sent while signed in as this email. Or create your own
             workspace:
           </p>
           <Card className="mt-8 p-6">

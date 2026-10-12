@@ -84,7 +84,11 @@ export function Overview({
       <Card>
         <CardHeader
           title="Interview pipeline"
-          description="Consent and in-browser AI interviews. Candidates click their link, consent, and talk to the agent through their own microphone — no phone call. Non-responders are re-invited up to three times."
+          description={
+            p.interviewMode === "phone_call"
+              ? "Consent and AI phone interviews. Candidates click their link and confirm; the AI then calls them within your calling hours, retrying up to three times. Non-responders are re-invited up to three times."
+              : "Consent and in-browser AI interviews. Candidates click their link, consent, and talk to the agent through their own microphone — no phone call. Non-responders are re-invited up to three times."
+          }
         />
         {inPipeline.length === 0 ? (
           <Empty title="No candidates in the interview stage yet" />
@@ -205,7 +209,7 @@ function NextStep({ p, editable, total, waitingToSelect, processing, failed }: {
                 {waitingToSelect} ranked candidates are ready{processing ? `, ${processing} still processing` : ""}.
               </p>
               <p className="mt-0.5 text-sm text-ink-3">
-                Review the ranking first. Starting sends the top candidates (up to the pool of {p.interviewPool}) a link to an in-browser AI interview they can take whenever they’re ready.
+                Review the ranking first. Starting sends the top candidates (up to the pool of {p.interviewPool}) {p.interviewMode === "phone_call" ? "a link to confirm, after which the AI calls them within your calling hours." : "a link to an in-browser AI interview they can take whenever they’re ready."}
               </p>
             </div>
             <SubmitButton pendingText="Selecting…" confirm="Invite the top-ranked candidates to the AI interview?">

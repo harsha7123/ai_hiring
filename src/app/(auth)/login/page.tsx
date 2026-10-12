@@ -8,13 +8,17 @@ import { login } from "../actions";
 
 export const metadata: Metadata = { title: "Sign in" };
 
-export default async function LoginPage() {
-  if (await readSession()) redirect("/app");
+export default async function LoginPage({ searchParams }: PageProps<"/login">) {
+  const sp = await searchParams;
+  // Only an invite page is a valid return target (the login action re-checks this).
+  const next = typeof sp.next === "string" && /^\/invite\/[A-Za-z0-9_-]{20,64}$/.test(sp.next) ? sp.next : null;
+  if (await readSession()) redirect(next ?? "/app");
   return (
     <>
       <h1 className="text-2xl font-semibold tracking-tight">Sign in</h1>
       <p className="mt-1.5 text-sm text-ink-2">Welcome back to your screening workspace.</p>
       <ActionForm action={login} className="mt-8 space-y-4">
+        {next && <input type="hidden" name="next" value={next} />}
         <Field label="Work email" htmlFor="email">
           <Input id="email" name="email" type="email" autoComplete="email" required />
         </Field>

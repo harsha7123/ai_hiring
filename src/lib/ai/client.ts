@@ -21,7 +21,11 @@ function getClient(): OpenAI {
   if (!process.env.OPENAI_API_KEY) {
     throw new AiConfigError("OPENAI_API_KEY is not configured");
   }
-  client ??= new OpenAI({ maxRetries: 4, timeout: 5 * 60_000 });
+  // Worst case per model call: 2 tries × 3 min = 6 min, so a job making two
+  // calls (OCR + profile) stays under 12 min — inside the queue's 20-minute
+  // stale-job window (lib/jobs/queue.ts). Longer outages are covered by the
+  // job's own retries with backoff, not by holding the job open.
+  client ??= new OpenAI({ maxRetries: 1, timeout: 3 * 60_000 });
   return client;
 }
 

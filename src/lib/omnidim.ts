@@ -178,10 +178,6 @@ export async function listCallLogs(apiKey: string, agentId: number, pagesize = 1
   return res.call_log_data ?? [];
 }
 
-export async function testKey(apiKey: string): Promise<void> {
-  await request(apiKey, "GET", "agents", undefined, { pageno: 1, pagesize: 1 });
-}
-
 // ---------- Tolerant result parsing (webhook payloads and call logs) ----------
 
 /** Depth-first search for the first non-empty value under any of the given keys. */
