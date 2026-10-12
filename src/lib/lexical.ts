@@ -11,14 +11,31 @@ const ALIASES: Record<string, string[]> = {
   "google cloud": ["gcp"],
   "machine learning": ["ml"],
   "continuous integration": ["ci/cd", "ci cd"],
+  "rest api": ["restful", "rest apis", "restful api", "restful apis", "rest"],
+  react: ["react.js", "reactjs"],
+  "vue.js": ["vue", "vuejs"],
+  "next.js": ["nextjs"],
+  "c#": ["csharp", ".net"],
+  golang: ["go lang"],
+  "microsoft excel": ["excel", "ms excel"],
 };
+
+/** Singular/plural forms of a phrase's last word ("rest apis" <-> "rest api", "databases" <-> "database"). */
+function numberForms(t: string): string[] {
+  if (/[^s]s$/.test(t) && t.length > 4) return [t.slice(0, -1)];
+  if (/[a-z]$/.test(t) && !t.endsWith("s")) return [`${t}s`];
+  return [];
+}
 
 function variants(term: string): string[] {
   const t = normalise(term);
-  const extra = ALIASES[t] ?? Object.entries(ALIASES).find(([, v]) => v.includes(t))?.[1] ?? [];
+  // An alias group matches in both directions: the canonical name, or any of its aliases.
+  const group = Object.entries(ALIASES).find(([k, v]) => k === t || v.includes(t));
+  const extra = group ? [group[0], ...group[1]] : [];
   // Also match meaningful sub-terms of long phrases ("REST API design" -> "rest api").
   const words = t.split(" ").filter((w) => w.length > 2);
-  return [t, ...extra.map(normalise), ...(words.length > 2 ? [words.slice(0, 2).join(" ")] : [])];
+  const base = [t, ...extra.map(normalise), ...(words.length > 2 ? [words.slice(0, 2).join(" ")] : [])];
+  return [...new Set(base.flatMap((v) => [v, ...numberForms(v)]))];
 }
 
 export function mentions(text: string, term: string): boolean {

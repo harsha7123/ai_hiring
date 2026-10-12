@@ -8,7 +8,7 @@ import { DEFAULT_ORG_SETTINGS } from "@/db/schema";
 import { audit } from "@/lib/audit";
 import { randomToken, sha256 } from "@/lib/crypto";
 import { passwordProblem } from "@/lib/auth/password-policy";
-import { clientIp, destroySession, readSession, switchSessionOrg } from "@/lib/auth/session";
+import { acceptInviteForUser, clientIp, destroySession, readSession, switchSessionOrg, verifiedUser } from "@/lib/auth/session";
 import { supabaseServer } from "@/lib/supabase/server";
 import { friendlyAuthError } from "@/lib/supabase/errors";
 import { autoProvisionVoiceAgent } from "@/lib/omnidim";
@@ -82,7 +82,13 @@ export async function login(_: FormState, fd: FormData): Promise<FormState> {
     return { error: friendlyAuthError(error) };
   }
   await audit({ userId: data.user.id, action: "auth.login", ip });
-  redirect("/app");
+  redirect(safeNext(fd.get("next")));
+}
+
+/** Only ever redirect back to an invite page on this site — never an arbitrary URL. */
+function safeNext(v: FormDataEntryValue | null): string {
+  const s = String(v ?? "");
+  return /^\/invite\/[A-Za-z0-9_-]{20,64}$/.test(s) ? s : "/app";
 }
 
 export async function logout() {
@@ -93,10 +99,10 @@ export async function logout() {
 }
 
 /**
- * Invited users don't set a membership directly here — they just get a Supabase
- * account for the exact invited email. The membership is attached automatically
- * the next time they load a page (see consumePendingInvites in lib/auth/session.ts),
- * which also covers someone who already has an account and simply signs in.
+ * Creates a Supabase account for the exact invited email and, when Supabase
+ * signs them straight in, accepts the invite right away (the token in the form
+ * is the proof they were sent it). With email confirmation on, they confirm
+ * first, then reopen the invite link and accept it while signed in.
  */
 export async function joinInvite(_: FormState, fd: FormData): Promise<FormState> {
   const token = String(fd.get("token") ?? "");
@@ -117,7 +123,20 @@ export async function joinInvite(_: FormState, fd: FormData): Promise<FormState>
   // account can only ever join the workspace it was actually invited to.
   const { data, error } = await supabase.auth.signUp({ email: invite.email, password, options: { data: { name } } });
   if (error) return { error: friendlyAuthError(error) };
-  if (!data.session) return { ok: CONFIRM_MSG };
+  if (!data.session || !data.user) return { ok: "Check your email for a confirmation link. After confirming, open this invite link again and sign in to join." };
+  const result = await acceptInviteForUser(token, { id: data.user.id, email: invite.email.toLowerCase(), name });
+  if ("error" in result) return { error: result.error };
+  await audit({ orgId: result.orgId, userId: data.user.id, action: "member.joined", ip: await clientIp() });
+  redirect("/app");
+}
+
+/** A signed-in user (existing account) accepts an invite from its link. */
+export async function acceptInvite(_: FormState, fd: FormData): Promise<FormState> {
+  const user = await verifiedUser();
+  if (!user) return { error: "Sign in first." };
+  const result = await acceptInviteForUser(String(fd.get("token") ?? ""), user);
+  if ("error" in result) return { error: result.error };
+  await audit({ orgId: result.orgId, userId: user.id, action: "member.joined", ip: await clientIp() });
   redirect("/app");
 }
 

@@ -6,6 +6,9 @@
 const SENSITIVE_LINE =
   /^\s*(date of birth|dob|d\.o\.b|age|gender|sex|marital status|religion|caste|category|nationality|father'?s name|mother'?s name|spouse)\b.*$/gim;
 
+/** Words that follow "MS"/"Ms" in CVs as Microsoft product names, not people. */
+const NOT_A_NAME = "Office|Excel|Word|Access|Project|Teams|Dynamics|PowerPoint|Outlook|Visio|Azure|Power|Visual|Windows|Sql|Sharepoint|SharePoint";
+
 export function redactForScoring(text: string, name?: string | null): string {
   let out = text
     .replace(SENSITIVE_LINE, "[redacted personal detail]")
@@ -15,7 +18,10 @@ export function redactForScoring(text: string, name?: string | null): string {
       const digits = m.replace(/\D/g, "").length;
       return digits >= 10 && digits <= 15 ? "[phone]" : m;
     })
-    .replace(/\b(he|she|him|her|his|hers|mr|mrs|ms|miss)\b\.?/gi, "they")
+    // Honorifics: only title-case ones directly before a name ("Ms. Priya", "Mr Rao"),
+    // never product names like "MS Office" or "Ms Excel".
+    .replace(new RegExp(`\\b(?:Mr|Mrs|Ms|Miss)\\.?\\s+(?!(?:${NOT_A_NAME})\\b)(?=[A-Z][a-z])`, "g"), "")
+    .replace(/\b(he|she|him|her|his|hers)\b/gi, "they")
     .replace(/https?:\/\/\S*linkedin\S*/gi, "[profile link]");
   if (name) {
     for (const part of name.split(/\s+/).filter((p) => p.length > 2)) {

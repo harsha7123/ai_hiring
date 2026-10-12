@@ -43,9 +43,19 @@ export async function fail(job: Job, err: unknown) {
   return final;
 }
 
-/** Recover jobs whose worker died mid-run. */
+/**
+ * Recover jobs whose worker died mid-run. The 20-minute window must stay well
+ * above the longest a healthy job can take (see the OpenAI client's timeout ×
+ * retries in lib/ai/client.ts), or a slow-but-alive job would be run twice. A
+ * job that keeps dying mid-run is failed once out of attempts, not retried forever.
+ */
 export async function requeueStale() {
-  await sql`update jobs set status = 'pending', locked_at = null where status = 'running' and locked_at < now() - interval '15 minutes'`;
+  await sql`
+    update jobs set
+      status = case when attempts >= max_attempts then 'failed'::job_status else 'pending'::job_status end,
+      locked_at = null,
+      last_error = coalesce(last_error, 'Worker stopped while running this job')
+    where status = 'running' and locked_at < now() - interval '20 minutes'`;
 }
 
 export async function pruneDone() {

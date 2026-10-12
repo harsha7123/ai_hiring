@@ -5,7 +5,7 @@ Multi-tenant web app that implements the proposal end to end:
 1. **Setup** — recruiter pastes a JD; the AI model extracts a requirement spec that the recruiter edits and confirms. Knockouts, weights, custom questions, shortlist size, interview pool and a hard interview spend cap are set per role.
 2. **Stage 1: CV ranking** — bulk upload (PDF, DOCX, TXT, scanned images with OCR fallback). Every CV is structured, passed through a fast keyword pass, then scored on a fixed rubric. Every sub-score keeps only evidence quotes that are verified to exist in the CV. Every CV is also kept in a company-wide library (deduped by email) — any later role can pull in and re-score every CV the company has ever collected, not just what was freshly uploaded to it.
 3. **Stage 2: consent** — top N candidates get an invite (email via Resend and/or SMS/WhatsApp via Twilio, both optional — without either, the recruiter copies and shares the link manually) to a consent page. Unanswered invites are re-sent up to 3 times, then the candidate is marked unreachable.
-4. **Stage 3: AI voice interview** — the candidate consents, then the AI interview happens either **in-browser** (talks to the agent right there in their own tab, over their own microphone — no app to install; scored from the transcript the browser itself captured, so it never depends on a webhook) or, for roles set to **phone call** (requires an OmniDimension phone number), the system calls the candidate automatically within the workspace's configured calling hours (default 9am–6pm IST) and retries at different times of day up to 3 attempts. Interview mode is chosen per role in its Settings tab. Questions are generated per candidate from the gap between their CV and the JD; the agent always discloses it is an AI and that the conversation/call is recorded.
+4. **Stage 3: AI voice interview** — the candidate consents, then the AI interview happens either **in-browser** (talks to the agent right there in their own tab, over their own microphone — no app to install; scored from OmniDimension's own transcript, with the browser's live copy as a flagged fallback) or, for roles set to **phone call** (requires an OmniDimension phone number), the system calls the candidate automatically within the workspace's configured calling hours (default 9am–6pm IST) and retries at different times of day up to 3 attempts. Interview mode is chosen per role in its Settings tab. Questions are generated per candidate from the gap between their CV and the JD; the agent always discloses it is an AI and that the conversation/call is recorded.
 5. **Stage 4: re-rank and reports** — the transcript is scored on a fixed rubric and combined with the CV score using the role's weights. The report includes a recommendation, strengths and concerns with verbatim quotes, skill verification, logistics and suggested probes. Unsupported claims are dropped before the report is released.
 6. **Delivery** — ranked shortlist plus reserve pool, report PDF export (print), CSV export, funnel analytics with drop-off reasons. Each candidate who makes the shortlist automatically gets a one-time email saying so, with a link to book the human round if you've set a scheduling link (Calendly or similar) for that role — otherwise it just says the hiring team will be in touch.
 
@@ -17,22 +17,24 @@ The platform ranks and recommends; it never rejects. Recruiters can promote or r
 - **Supabase Auth**: sign-up, sign-in and session cookies. The app keeps its own `users`/`memberships`/`organizations` tables (via Drizzle, in your own Postgres) keyed by the Supabase auth user id, for roles and multi-tenant data — Supabase itself only ever sees an email and password.
 - **PostgreSQL** via Drizzle ORM: all app data, including CV files and a durable job queue (`FOR UPDATE SKIP LOCKED`). This can be the same Postgres database Supabase gives your project, or any Postgres 14+.
 - **OpenAI** (Responses API, structured outputs): fast tier `gpt-5-mini` for CV parsing and scoring, smart tier `gpt-5` for questions, interview scoring and reports
-- **OmniDimension**: voice agent + browser voice sessions (`@omnidim-ai/client`). The candidate's mic and the agent's voice both run in their browser tab; a post-call webhook is used only as best-effort enrichment (recording link, sentiment), never as the thing scoring depends on.
+- **OmniDimension**: voice agent + browser voice sessions (`@omnidim-ai/client`). The candidate's mic and the agent's voice both run in their browser tab; the post-call webhook delivers the authoritative transcript and the recording link.
 - Background worker and scheduler run in the web process by default, or as a separate process (`npm run worker`)
 
 ## Security
 
-- Authentication delegated to Supabase Auth (bcrypt password storage, session tokens, rate limiting all handled there) — this app never stores a password
+- Authentication delegated to Supabase Auth (bcrypt password storage, session tokens, rate limiting all handled there) — this app never stores a password. Every request verifies the session JWT's signature (`getClaims()`); the cookie's contents are never trusted on their own.
+- Team invites need both the invite link's token and a signed-in account for the invited email — an email match alone never grants access.
 - Roles: owner, admin, recruiter, viewer, checked on every page, action and route
-- Tenant isolation: every query is scoped to the session's organisation. A cross-tenant test returns 404 on every route.
-- Per-tenant OmniDimension keys encrypted with AES-256-GCM (`APP_ENCRYPTION_KEY`)
-- Webhooks authenticated by a per-organisation secret in the URL (rotatable)
+- Tenant isolation: every query is scoped to the session's organisation; another tenant's IDs return 404.
+- Interview integrity: a transcript posted by the candidate's browser is checked against the session's real (server-timed) duration, replaced by OmniDimension's own record when that arrives, and flagged "unverified" in the report if it never does.
+- Webhooks authenticated by a per-organisation secret in the URL, rotatable by the owner in Settings
+- `APP_ENCRYPTION_KEY` (AES-256-GCM) is reserved for stored secrets; the OmniDimension key itself lives only in server env vars
 - Uploads: 10 MB limit, magic-byte type sniffing, files always served as downloads
 - Same-origin checks on uploads; server actions have built-in origin checks
 - CSP, HSTS, `X-Frame-Options: DENY`, `nosniff`, strict referrer and permissions policies
 - Bias controls: name, contact details, DOB/age, gender, marital status, religion, caste and nationality lines are redacted before scoring
 - Audit log of sign-ins, configuration changes, candidate decisions, consent, downloads and deletions
-- Retention: recordings (default 90 days) and candidate records (default 180 days) are purged automatically. Admins can hard-delete a candidate on request.
+- Retention: recording links (default 90 days after the interview) and candidate records plus their CV-library copies (default 180 days without activity) are purged automatically. Admins can hard-delete a person on request — that also removes their CV-library copy and their applications to other roles.
 
 ## Setting up Supabase
 
@@ -50,7 +52,10 @@ No Supabase client code runs in the browser — every call goes through this app
 npm install
 cp .env.example .env.local        # fill in DATABASE_URL, APP_ENCRYPTION_KEY, the Supabase keys; AI_DEMO_MODE=true to run without an OpenAI key
 npm run dev                       # migrations run automatically on boot
+npm test                          # unit tests (scoring rules, redaction, quote grounding, call parsing)
 ```
+
+CI (`.github/workflows/ci.yml`) runs typecheck, lint, tests and a production build on every push and pull request.
 
 `AI_DEMO_MODE=true` swaps the AI model for deterministic heuristics so the whole CV/interview pipeline can run offline. Use it only for testing — it does not need `OPENAI_API_KEY` at all, but Supabase credentials are still required for sign-in.
 
@@ -62,7 +67,7 @@ This is configured entirely with server env vars — there's no admin UI for it,
 2. Make sure `APP_URL` is your public `https://` address — a secure context is required for the browser to grant microphone access (plain `http://localhost` is exempt, for local dev).
 3. Optional: set `OMNIDIM_FROM_NUMBER_ID` to your OmniDimension outbound Caller ID (Dashboard → Phone Numbers) to enable **phone-call** as an interview mode (see below). Every workspace picks this up automatically too, including ones created before you set it.
 
-By default interviews are browser voice sessions (OmniDimension's Sessions API) — no phone number needed. When the candidate clicks **Start my interview now**, the app creates a session server-side and the browser connects directly with `@omnidim-ai/client`, which handles microphone capture and audio playback. The moment the session ends, the browser posts the transcript it captured straight back to the app — that's what triggers scoring, so a missed or delayed webhook never blocks anything. The webhook is only used to backfill a recording link and sentiment, if OmniDimension provides them for sessions, and never re-scores an interview that's already completed.
+By default interviews are browser voice sessions (OmniDimension's Sessions API) — no phone number needed. When the candidate clicks **Start my interview now**, the app creates a session server-side and the browser connects directly with `@omnidim-ai/client`, which handles microphone capture and audio playback. The moment the session ends, the browser posts the transcript it captured back to the app, which marks the interview finished. Because the candidate controls that request, its transcript is only a fallback: scoring waits two minutes for OmniDimension's post-call webhook, whose transcript is authoritative and replaces the browser's copy (re-scoring if needed, even if it arrives late). If the webhook never arrives, the browser's copy is scored and the report says it's unverified. The webhook also backfills the recording link.
 
 **Phone-call interviews (optional, per role).** With `OMNIDIM_FROM_NUMBER_ID` set, any role can be switched to **phone call** mode in that role's own Settings tab (In-browser stays the default and is the only option otherwise). For a phone-call role, consenting on the invite page doesn't start anything in the browser — it just confirms the candidate is ready. The app then dials them automatically, strictly within the workspace's calling-hours window (Settings → Workspace and data retention, default 9am–6pm **IST**; email and SMS are never restricted by this window), retrying at different times of day up to 3 attempts before marking the candidate unreachable. The post-call webhook is the only signal that a phone call ended, so for this mode it drives completion directly (with a call-log poll as a fallback if the webhook is delayed).
 

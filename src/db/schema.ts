@@ -296,7 +296,12 @@ export const interviews = pgTable(
     candidateId: uuid("candidate_id").notNull().references(() => candidates.id, { onDelete: "cascade" }),
     positionId: uuid("position_id").notNull().references(() => positions.id, { onDelete: "cascade" }),
     status: interviewStatus("status").notNull().default("queued"),
+    // Total sessions/dials ever made — what the role's spend cap counts. Never decreases.
     attempts: integer("attempts").notNull().default(0),
+    // `attempts` at the moment a recruiter last reset this interview. The
+    // per-candidate retry limits count `attempts - attemptsAtReset`, so a reset
+    // gives the candidate a fresh set of tries without hiding past spend.
+    attemptsAtReset: integer("attempts_at_reset").notNull().default(0),
     nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
     questions: jsonb("questions").$type<InterviewQuestion[]>(),
     omnidimRequestId: text("omnidim_request_id"),
@@ -305,6 +310,12 @@ export const interviews = pgTable(
     completedAt: timestamp("completed_at", { withTimezone: true }),
     durationSec: integer("duration_sec"),
     transcript: text("transcript"),
+    // Where `transcript` came from. "provider" (OmniDimension's own post-call
+    // record, delivered to our authenticated webhook or call-log poll) is
+    // authoritative. "browser" is what the candidate's own tab posted back —
+    // used only as a fallback, since a candidate controls that request, and
+    // flagged as unverified in the report. "manual" is a recruiter paste.
+    transcriptSource: text("transcript_source").$type<"provider" | "browser" | "manual">(),
     recordingUrl: text("recording_url"),
     summary: text("summary"),
     assessment: jsonb("assessment").$type<InterviewAssessment>(),

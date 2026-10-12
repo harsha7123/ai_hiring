@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { WebSession, type SessionStatus, type TranscriptEvent } from "@omnidim-ai/client";
 import { Card, buttonClass, cx } from "@/components/ui";
+import { mergeTranscriptEvent } from "@/lib/interview-rules";
 
 type Phase = "connecting" | "active" | "saving" | "ended" | "error";
 
@@ -19,7 +20,6 @@ export function InterviewWidget({ token, wsUrl }: { token: string; wsUrl: string
   const [transcript, setTranscript] = useState<TranscriptEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const sessionRef = useRef<WebSession | null>(null);
-  const startedAt = useRef(0);
   const endedOnce = useRef(false);
   const listRef = useRef<HTMLDivElement>(null);
   const transcriptRef = useRef<TranscriptEvent[]>([]);
@@ -27,7 +27,6 @@ export function InterviewWidget({ token, wsUrl }: { token: string; wsUrl: string
   useEffect(() => {
     const session = new WebSession();
     sessionRef.current = session;
-    startedAt.current = Date.now();
 
     const toLine = (t: TranscriptEvent) => `${t.role === "agent" ? "Interviewer" : "Candidate"}: ${t.text}`;
     const finish = async (reason: string) => {
@@ -39,7 +38,7 @@ export function InterviewWidget({ token, wsUrl }: { token: string; wsUrl: string
         await fetch(`/api/i/${token}/complete`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ transcript: text, durationSec: Math.round((Date.now() - startedAt.current) / 1000) }),
+          body: JSON.stringify({ transcript: text }),
         });
       } catch {
         // The interview still happened; the recruiter can follow up if this never lands.
@@ -52,15 +51,11 @@ export function InterviewWidget({ token, wsUrl }: { token: string; wsUrl: string
       else if (typeof s === "object" && s.state === "ended") void finish(s.reason);
     });
     session.on("transcript", (t: TranscriptEvent) => {
-      setTranscript((prev) => {
-        // Each new chunk for the same speaker as the last line is that line still
-        // growing (streaming ASR/TTS text) — replace it in place rather than
-        // appending, so one turn stays one line. A new speaker starts a new line.
-        const last = prev[prev.length - 1];
-        const next = last && last.role === t.role ? [...prev.slice(0, -1), t] : [...prev, t];
-        transcriptRef.current = next;
-        return next;
-      });
+      // Growing (non-final) lines are replaced in place; final ones are kept, so
+      // a candidate pausing mid-answer doesn't lose what they said before the pause.
+      const next = mergeTranscriptEvent(transcriptRef.current, t);
+      transcriptRef.current = next;
+      setTranscript(next);
     });
     session.on("error", (e: Error) => {
       setError(e.message || "Connection error");

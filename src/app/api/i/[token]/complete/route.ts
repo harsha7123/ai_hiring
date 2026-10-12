@@ -4,7 +4,9 @@ import { completeWebInterview } from "@/lib/pipeline";
 /**
  * The candidate's browser posts here the moment its OmniDimension session ends,
  * with the transcript it captured live from the SDK's own transcript events.
- * This is the guaranteed completion path — scoring never depends on a webhook.
+ * This marks the interview finished even if the webhook never arrives, but the
+ * transcript itself is untrusted (the candidate controls this request): see
+ * completeWebInterview for how it's checked and superseded.
  */
 export async function POST(req: Request, { params }: RouteContext<"/api/i/[token]/complete">) {
   const { token } = await params;
@@ -16,14 +18,15 @@ export async function POST(req: Request, { params }: RouteContext<"/api/i/[token
   } catch {
     return NextResponse.json({ error: "Invalid body" }, { status: 400 });
   }
-  const { transcript, durationSec } = (body ?? {}) as { transcript?: unknown; durationSec?: unknown };
+  // Duration is measured on the server from when the session was created; a
+  // client-supplied one is ignored.
+  const { transcript } = (body ?? {}) as { transcript?: unknown };
   if (typeof transcript !== "string" || transcript.length > 200_000) {
     return NextResponse.json({ error: "Invalid transcript" }, { status: 400 });
   }
-  const duration = typeof durationSec === "number" && Number.isFinite(durationSec) ? Math.round(durationSec) : null;
 
   try {
-    await completeWebInterview(token, transcript, duration);
+    await completeWebInterview(token, transcript);
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : "Could not save the interview" }, { status: 400 });
   }

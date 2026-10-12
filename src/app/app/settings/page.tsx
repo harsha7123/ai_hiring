@@ -7,7 +7,7 @@ import { emailConfigured } from "@/lib/email";
 import { ActionForm, SubmitButton } from "@/components/client";
 import { Badge, Card, CardHeader, Field, Input, PageHeader, Select, td, th } from "@/components/ui";
 import { fmtDate } from "@/lib/labels";
-import { inviteMember, removeMember, revokeInvite, updateOrg } from "../actions";
+import { inviteMember, removeMember, revokeInvite, rotateWebhookSecret, updateOrg } from "../actions";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -44,6 +44,17 @@ export default async function SettingsPage() {
           <p className="p-5 text-sm text-ink-3">
             Voice interviews aren&apos;t connected yet. This is set up by whoever manages the server (OMNIDIM_API_KEY), not here — ask them to check it&apos;s configured.
           </p>
+        )}
+        {ctx.role === "owner" && (
+          <ActionForm action={rotateWebhookSecret} className="flex flex-wrap items-center justify-between gap-3 border-t border-line p-5">
+            <p className="max-w-xl text-sm text-ink-3">
+              Rotate the secret in this workspace&apos;s call-result webhook address if it may have leaked. A new interview agent is set up automatically; interviews
+              running right now still finish, but their recording link may not be saved.
+            </p>
+            <SubmitButton variant="secondary" size="sm" confirm="Rotate the webhook secret now?">
+              Rotate webhook secret
+            </SubmitButton>
+          </ActionForm>
         )}
       </Card>
 

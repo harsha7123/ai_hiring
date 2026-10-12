@@ -32,7 +32,7 @@ export function PositionSettings({ position: p, editable, isAdmin, phoneAvailabl
               hint={
                 phoneAvailable
                   ? "Phone call: an outbound AI call, placed within your configured calling hours. In-browser: the candidate talks to the agent in their own browser tab, right away."
-                  : "In-browser is the only option until your workspace has an OmniDimension phone number — add one in Settings → Voice interviews."
+                  : "In-browser is the only option until the server has an OmniDimension phone number (OMNIDIM_FROM_NUMBER_ID) — ask whoever manages the server."
               }
             >
               <Select id="interviewMode" name="interviewMode" defaultValue={p.interviewMode} disabled={!phoneAvailable}>

@@ -2,48 +2,39 @@
  * The screening pipeline: every stage is a durable job or a scheduler step.
  * setup -> parse -> score (1000 -> N) -> invite/consent -> interview -> assess -> rerank -> shortlist
  */
-import { and, asc, eq, inArray, isNull, lt, sql as dsql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lt, or, sql as dsql } from "drizzle-orm";
 import { db, schema, sql } from "@/db";
-import type { CvProfile, OrgSettings, PositionConfig } from "@/db/schema";
+import type { CvProfile, OrgSettings } from "@/db/schema";
 import { extractText } from "@/lib/extract";
 import { knockoutReason, lexicalScore } from "@/lib/lexical";
 import { redactForScoring } from "@/lib/redact";
 import * as ai from "@/lib/ai/tasks";
 import { enqueue } from "@/lib/jobs/queue";
 import { randomToken } from "@/lib/crypto";
-import { sendInvite, toE164 } from "@/lib/messaging";
-import { isValidEmail, sendEmail } from "@/lib/email";
+import { messagingConfigured, sendInvite, toE164 } from "@/lib/messaging";
+import { emailConfigured, isValidEmail, sendEmail } from "@/lib/email";
 import { createWebSession, dispatchCall, listCallLogs, parseCallResult, phoneKey, resolveOmnidimKey, type CallResult } from "@/lib/omnidim";
 import { audit } from "@/lib/audit";
+import { browserTranscriptIsPlausible, callWindow, combinedScore, fmtHour, MIN_TRANSCRIPT_CHARS, nextCallSlot } from "@/lib/interview-rules";
+
+export { combinedScore };
 
 const appUrl = () => (process.env.APP_URL || "http://localhost:3000").replace(/\/$/, "");
 /** Below this lexical coverage a CV is filtered out before any model call. */
 const LEXICAL_FLOOR = Number(process.env.LEXICAL_FLOOR ?? 15);
 const MAX_INVITES = 3;
 const MAX_CALL_ATTEMPTS = 3;
+/** Browser sessions one candidate may open (reloads, dropped connections) before a recruiter has to step in. */
+const MAX_WEB_SESSIONS = 4;
 /** A session the candidate never finished (closed tab, lost connection) this long ago is abandoned. */
 const STALE_SESSION_MS = 2 * 3600_000;
-/** IST (UTC+5:30) — this app's calling-hours window (org.settings.callWindow*) is always local India time. */
-const TZ_OFFSET_MIN = 330;
+/**
+ * A browser-posted transcript waits this long before scoring, so OmniDimension's
+ * own (authoritative) post-call webhook usually lands first and replaces it.
+ */
+const PROVIDER_TRANSCRIPT_GRACE_MS = 2 * 60_000;
 
-const fmtHour = (h: number) => (h === 0 || h === 24 ? "12am" : h === 12 ? "12pm" : h > 12 ? `${h - 12}pm` : `${h}am`);
-
-function callWindow(settings: OrgSettings): { startHour: number; endHour: number } {
-  const startHour = Number.isFinite(settings.callWindowStartHour) ? settings.callWindowStartHour : 9;
-  const endHour = Number.isFinite(settings.callWindowEndHour) ? settings.callWindowEndHour : 18;
-  return { startHour, endHour };
-}
-
-/** Next IST moment at or after `from` that falls inside the org's calling-hours window. */
-function nextCallSlot(from: Date, settings: OrgSettings): Date {
-  const { startHour, endHour } = callWindow(settings);
-  const local = new Date(from.getTime() + TZ_OFFSET_MIN * 60_000);
-  const h = local.getUTCHours() + local.getUTCMinutes() / 60;
-  if (h >= startHour && h < endHour) return from;
-  const dayOffset = h >= endHour ? 1 : 0;
-  const nextLocalStart = new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + dayOffset, startHour, 0));
-  return new Date(nextLocalStart.getTime() - TZ_OFFSET_MIN * 60_000);
-}
+const normEmail = (e: string | null | undefined) => (e ? e.trim().toLowerCase() || null : null);
 
 async function getPosition(id: string) {
   const [p] = await db.select().from(schema.positions).where(eq(schema.positions.id, id));
@@ -96,12 +87,13 @@ export async function runParseCv({ candidateId }: { candidateId: string }) {
     if (!text || text.trim().length < 100) throw new Error("No readable text found in this CV");
     const profile = await ai.structureProfile(text);
     const phone = toE164(profile.phone) ?? profile.phone;
-    const cvDocumentId = await upsertCvDocument(c.orgId, { ...c, cvText: text, profile, name: profile.name, email: profile.email, phone });
+    const email = normEmail(profile.email);
+    const cvDocumentId = await upsertCvDocument(c.orgId, { ...c, cvText: text, profile, name: profile.name, email, phone });
     await setCandidate(candidateId, {
       cvText: text,
       profile,
       name: profile.name,
-      email: profile.email,
+      email,
       phone,
       cvDocumentId,
       stage: "parsed",
@@ -126,11 +118,12 @@ async function upsertCvDocument(
   orgId: string,
   doc: { name: string | null; email: string | null; phone: string | null; fileName: string; fileMime: string; fileData: Buffer | null; cvText: string; profile: CvProfile },
 ): Promise<string | null> {
-  if (!doc.email) return null;
+  const email = normEmail(doc.email);
+  if (!email) return null;
   const values = {
     orgId,
     name: doc.name,
-    email: doc.email,
+    email,
     phone: doc.phone,
     fileName: doc.fileName,
     fileMime: doc.fileMime,
@@ -158,12 +151,15 @@ export async function matchPoolToPosition(positionId: string, orgId: string): Pr
   const p = await getPosition(positionId);
   if (p.orgId !== orgId) throw new Error("Role not found");
   const existing = await db
-    .select({ cvDocumentId: schema.candidates.cvDocumentId })
+    .select({ cvDocumentId: schema.candidates.cvDocumentId, email: schema.candidates.email })
     .from(schema.candidates)
     .where(eq(schema.candidates.positionId, positionId));
   const already = new Set(existing.map((r) => r.cvDocumentId).filter((id): id is string => id != null));
+  // Also match on email: a CV uploaded straight to this role that's still being
+  // parsed has no cvDocumentId yet, and mustn't be added a second time from the library.
+  const alreadyEmails = new Set(existing.map((r) => normEmail(r.email)).filter((e): e is string => e != null));
   const pool = await db.select().from(schema.cvDocuments).where(eq(schema.cvDocuments.orgId, orgId));
-  const toAdd = pool.filter((d) => !already.has(d.id));
+  const toAdd = pool.filter((d) => !already.has(d.id) && !(d.email && alreadyEmails.has(normEmail(d.email)!)));
   for (const d of toAdd) {
     const [c] = await db
       .insert(schema.candidates)
@@ -242,11 +238,19 @@ export async function selectForInterview(positionId: string, orgId: string, user
 }
 
 export async function selectCandidate(candidateId: string, orgId: string, positionId: string) {
-  await setCandidate(candidateId, { stage: "selected", inviteToken: randomToken(24) });
+  // A fresh invite needs fresh consent (an earlier one, from before a rejection,
+  // stays in the audit log) and a fresh count of invitation attempts.
+  await setCandidate(candidateId, { stage: "selected", inviteToken: randomToken(24), consentAt: null, consentIp: null, consentText: null, inviteAttempts: 0 });
   await db
     .insert(schema.interviews)
     .values({ orgId, candidateId, positionId, status: "queued" })
-    .onConflictDoNothing({ target: schema.interviews.candidateId });
+    // Re-selected after an earlier interview was cancelled or never finished
+    // (e.g. rejected mid-way, then promoted): reopen it with fresh tries.
+    .onConflictDoUpdate({
+      target: schema.interviews.candidateId,
+      set: { status: "queued", nextAttemptAt: null, lastError: null, attemptsAtReset: dsql`${schema.interviews.attempts}` },
+      setWhere: dsql`${schema.interviews.status} not in ('completed', 'dispatched')`,
+    });
   await enqueue("design_questions", { candidateId }, { orgId });
   await enqueue("send_invite", { candidateId }, { orgId });
 }
@@ -284,18 +288,22 @@ export async function runSendInvite({ candidateId }: { candidateId: string }) {
         })()
       : `Hi ${first}, thanks for applying to ${org.name} for the ${p.title} role. The first round is a short (about 10 min) AI interview you take right from your phone or computer browser, whenever you're ready: ${link}`;
 
-  const emailResult = isValidEmail(c.email)
-    ? await sendEmail(c.email, `Your interview for ${p.title} at ${org.name}`, body)
-    : { sent: false, error: "No valid email on file" };
+  const canEmail = emailConfigured() && isValidEmail(c.email);
   const phone = toE164(c.phone);
-  const smsResult = phone ? await sendInvite(phone, body) : { sent: false, error: "No valid phone number" };
+  const canSms = messagingConfigured() && !!phone;
+  const emailResult = canEmail ? await sendEmail(c.email!, `Your interview for ${p.title} at ${org.name}`, body) : { sent: false, error: emailConfigured() ? "No valid email on file" : "Email not configured" };
+  const smsResult = canSms ? await sendInvite(phone!, body) : { sent: false, error: messagingConfigured() ? "No valid phone number" : "SMS not configured" };
 
   const sent = emailResult.sent || smsResult.sent;
   await setCandidate(candidateId, {
     stage: "invited",
-    inviteAttempts: c.inviteAttempts + 1,
+    // Only a real send attempt counts towards MAX_INVITES. When there's no
+    // channel for this candidate at all (nothing configured, or no usable email
+    // or phone), the recruiter shares the link by hand, and the candidate must
+    // never be auto-marked unreachable for invitations that were never sent.
+    inviteAttempts: canEmail || canSms ? c.inviteAttempts + 1 : c.inviteAttempts,
     lastInvitedAt: new Date(),
-    error: sent ? null : `Invite not sent automatically (email: ${emailResult.error}; SMS: ${smsResult.error}). Share the link manually.`,
+    error: sent ? null : `Invite not sent automatically (email: ${emailResult.error}; SMS: ${smsResult.error}). Copy the invite link and share it manually.`,
   });
 }
 
@@ -312,9 +320,16 @@ export async function recordConsent(opts: { token: string; ip: string | null; co
   if (!c.consentAt) {
     await setCandidate(c.id, { stage: "consented", consentAt: new Date(), consentIp: opts.ip, consentText: opts.consentText, error: null });
     await audit({ orgId: c.orgId, action: "candidate.consented", target: c.id, ip: opts.ip });
-  }
-  if (p.interviewMode === "phone_call") {
-    await db.update(schema.interviews).set({ status: "queued", nextAttemptAt: new Date(), lastError: null }).where(eq(schema.interviews.candidateId, c.id));
+    // Only the first consent puts a phone-call interview in the dialling queue.
+    // Re-submitting the form later must not reset a call that's already in
+    // progress (a second, parallel call) or skip the retry spacing of a
+    // missed one — and the status guard keeps it from reviving a cancelled one.
+    if (p.interviewMode === "phone_call") {
+      await db
+        .update(schema.interviews)
+        .set({ nextAttemptAt: new Date(), lastError: null })
+        .where(and(eq(schema.interviews.candidateId, c.id), eq(schema.interviews.status, "queued")));
+    }
   }
   return { mode: p.interviewMode };
 }
@@ -341,6 +356,11 @@ export async function startWebInterview(token: string): Promise<{ wsUrl: string 
   const [iv] = await db.select().from(schema.interviews).where(eq(schema.interviews.candidateId, c.id));
   if (!iv || iv.status === "completed" || iv.status === "cancelled") throw new Error("This interview is no longer active.");
   if (!iv.questions) throw new Error("Your interview questions are still being prepared. Please try again in a minute.");
+  // Each reload opens a new paid session; cap them per candidate so one flaky
+  // connection (or someone hammering reload) can't drain the role's budget.
+  if (iv.attempts - iv.attemptsAtReset >= MAX_WEB_SESSIONS) {
+    throw new Error("This interview has been restarted too many times. Please contact the recruiter to reset it.");
+  }
 
   const [p] = await db.select().from(schema.positions).where(eq(schema.positions.id, iv.positionId));
   const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, iv.orgId));
@@ -371,30 +391,52 @@ export async function startWebInterview(token: string): Promise<{ wsUrl: string 
   return { wsUrl };
 }
 
-/** Called by the browser once the session ends, with the transcript it captured live. */
-export async function completeWebInterview(token: string, transcript: string, durationSec: number | null): Promise<void> {
+/**
+ * Called by the browser once the session ends, with the transcript it captured live.
+ *
+ * The candidate controls this request, so its transcript is never trusted
+ * outright: it's stored as source "browser", sanity-checked against how long
+ * the session has really been open (timed on the server, not the client),
+ * and only scored after a grace period — by which time OmniDimension's own
+ * transcript has normally arrived on the authenticated webhook and replaced it
+ * (enrichFromWebhook). If the provider's copy never arrives, the browser copy
+ * is scored as a fallback and the report is flagged "unverified".
+ */
+export async function completeWebInterview(token: string, transcript: string): Promise<void> {
   const [c] = await db.select().from(schema.candidates).where(eq(schema.candidates.inviteToken, token));
   if (!c) throw new Error("Invalid invitation.");
   const [iv] = await db.select().from(schema.interviews).where(eq(schema.interviews.candidateId, c.id));
   if (!iv || iv.status !== "dispatched") return; // already completed or no longer active; ignore a duplicate post
 
-  if (transcript.trim().length < 80) {
+  const elapsedSec = iv.dispatchedAt ? Math.round((Date.now() - iv.dispatchedAt.getTime()) / 1000) : 0;
+  if (transcript.trim().length < MIN_TRANSCRIPT_CHARS) {
     await db.update(schema.interviews).set({ status: "failed", lastError: "Interview ended before it really started" }).where(eq(schema.interviews.id, iv.id));
     return;
   }
-  await db
+  if (!browserTranscriptIsPlausible(transcript, elapsedSec)) {
+    await db
+      .update(schema.interviews)
+      .set({ lastError: "Rejected a browser-submitted transcript that was too long for the session's real duration; waiting for the voice provider's record." })
+      .where(eq(schema.interviews.id, iv.id));
+    await audit({ orgId: iv.orgId, action: "interview.transcript_rejected", target: c.id, meta: { chars: transcript.length, elapsedSec } });
+    return;
+  }
+  const claimed = await db
     .update(schema.interviews)
-    .set({ status: "completed", completedAt: new Date(), transcript, durationSec, lastError: null })
-    .where(eq(schema.interviews.id, iv.id));
-  await enqueue("assess_interview", { interviewId: iv.id }, { orgId: iv.orgId });
+    .set({ status: "completed", completedAt: new Date(), transcript, transcriptSource: "browser", durationSec: elapsedSec, lastError: null })
+    .where(and(eq(schema.interviews.id, iv.id), eq(schema.interviews.status, "dispatched")))
+    .returning({ id: schema.interviews.id });
+  if (!claimed.length) return;
+  await enqueue("assess_interview", { interviewId: iv.id }, { orgId: iv.orgId, runAt: new Date(Date.now() + PROVIDER_TRANSCRIPT_GRACE_MS) });
 }
 
 /**
  * Single entry point for OmniDimension's post-call webhook, for both interview
  * modes. For a phone-call interview the webhook is the only signal that the
  * call ended, so it drives completion/retry directly (applyCallResult). For an
- * in-browser interview it is only best-effort enrichment — the browser's own
- * completion post is what actually finishes and scores the interview.
+ * in-browser interview its transcript is the authoritative record: it replaces
+ * whatever the candidate's browser posted, and re-scores if that was already
+ * scored. It also backfills the recording link and summary.
  */
 export async function enrichFromWebhook(interviewId: string, r: CallResult) {
   const [row] = await db
@@ -408,23 +450,32 @@ export async function enrichFromWebhook(interviewId: string, r: CallResult) {
   const patch: Partial<typeof schema.interviews.$inferInsert> = {};
   if (!iv.recordingUrl && r.recordingUrl) patch.recordingUrl = r.recordingUrl;
   if (!iv.summary && r.summary) patch.summary = r.summary;
-  if (!iv.transcript && r.transcript && r.transcript.length >= 80) patch.transcript = r.transcript;
+  const providerTranscript = r.transcript && r.transcript.trim().length >= MIN_TRANSCRIPT_CHARS ? r.transcript : null;
+  const replacesTranscript = providerTranscript != null && iv.transcriptSource !== "provider" && iv.transcriptSource !== "manual";
+  if (replacesTranscript) {
+    patch.transcript = providerTranscript;
+    patch.transcriptSource = "provider";
+    if (r.durationSec != null) patch.durationSec = r.durationSec;
+  }
   if (Object.keys(patch).length) await db.update(schema.interviews).set(patch).where(eq(schema.interviews.id, interviewId));
 
-  // The webhook arrived before the browser's own completion post (candidate closed
-  // the tab right after hanging up, say) — finish the interview from it instead of
-  // leaving it stuck in "dispatched".
-  if (iv.status === "dispatched" && r.status === "completed" && (r.transcript?.length ?? iv.transcript?.length ?? 0) >= 80) {
-    await completeFromResult(iv.id, iv.orgId, patch.transcript ?? iv.transcript!, r.durationSec);
+  if (iv.status === "dispatched" && r.status === "completed" && providerTranscript) {
+    // The webhook arrived before the browser's own completion post (candidate
+    // closed the tab right after hanging up, say) — finish from it.
+    await completeFromResult(iv.id, iv.orgId, providerTranscript, r.durationSec);
+  } else if (iv.status === "completed" && replacesTranscript && providerTranscript !== iv.transcript) {
+    // Already completed from the browser's copy: re-score from the provider's record.
+    await enqueue("assess_interview", { interviewId: iv.id }, { orgId: iv.orgId });
   }
 }
 
 async function completeFromResult(interviewId: string, orgId: string, transcript: string, durationSec: number | null) {
-  await db
+  const claimed = await db
     .update(schema.interviews)
-    .set({ status: "completed", completedAt: new Date(), transcript, durationSec, lastError: null })
-    .where(eq(schema.interviews.id, interviewId));
-  await enqueue("assess_interview", { interviewId }, { orgId });
+    .set({ status: "completed", completedAt: new Date(), transcript, transcriptSource: "provider", durationSec, lastError: null })
+    .where(and(eq(schema.interviews.id, interviewId), eq(schema.interviews.status, "dispatched")))
+    .returning({ id: schema.interviews.id });
+  if (claimed.length) await enqueue("assess_interview", { interviewId }, { orgId });
 }
 
 /** Cleans up sessions the candidate started but never finished (closed tab, lost connection). Phone calls have their own timeout in syncDispatchedCalls. */
@@ -542,16 +593,17 @@ export async function dispatchDueInterviews() {
 async function handleCallFailure(interviewId: string, reason: string, settings: OrgSettings) {
   const [iv] = await db.select().from(schema.interviews).where(eq(schema.interviews.id, interviewId));
   if (!iv) return;
-  if (iv.attempts < MAX_CALL_ATTEMPTS) {
+  const tries = iv.attempts - iv.attemptsAtReset;
+  if (tries < MAX_CALL_ATTEMPTS) {
     // Retry at a different time of day: +3h, then +20h — nextCallSlot still clamps to calling hours.
-    const delayHours = iv.attempts === 1 ? 3 : 20;
+    const delayHours = tries <= 1 ? 3 : 20;
     await db
       .update(schema.interviews)
       .set({ status: "queued", nextAttemptAt: nextCallSlot(new Date(Date.now() + delayHours * 3600_000), settings), lastError: reason })
       .where(eq(schema.interviews.id, interviewId));
   } else {
     await db.update(schema.interviews).set({ status: "no_answer", lastError: reason }).where(eq(schema.interviews.id, interviewId));
-    await setCandidate(iv.candidateId, { stage: "unreachable", stageReason: `No completed call after ${iv.attempts} attempts` });
+    await setCandidate(iv.candidateId, { stage: "unreachable", stageReason: `No completed call after ${tries} attempts` });
   }
 }
 
@@ -567,6 +619,7 @@ async function applyCallResult(iv: typeof schema.interviews.$inferSelect, r: Cal
         status: "completed",
         completedAt: new Date(),
         transcript: r.transcript,
+        transcriptSource: "provider",
         recordingUrl: r.recordingUrl,
         durationSec: r.durationSec,
         summary: r.summary,
@@ -620,6 +673,8 @@ export async function syncDispatchedCalls() {
 
 /** Stage 2 retry: re-send the invite link to candidates who haven't started yet, then give up. */
 export async function retryInvites() {
+  // Nothing can be re-sent automatically; recruiters share links by hand.
+  if (!emailConfigured() && !messagingConfigured()) return;
   const stale = await db
     .select()
     .from(schema.candidates)
@@ -673,11 +728,6 @@ export async function runAssessInterview({ interviewId }: { interviewId: string 
     stage: c.stage === "rejected" ? "rejected" : "interviewed",
   });
   await rerankPosition(p.id);
-}
-
-export function combinedScore(cv: number | null, interview: number, config: PositionConfig) {
-  const w = Math.min(1, Math.max(0, config.cvWeight));
-  return Math.round(((cv ?? 0) * w + interview * (1 - w)) * 10) / 10;
 }
 
 /** Top N become the shortlist; the rest remain visible as a reserve pool. */
@@ -741,10 +791,50 @@ export async function applyRetention() {
       .update(schema.interviews)
       .set({ recordingUrl: null })
       .where(and(eq(schema.interviews.orgId, org.id), lt(schema.interviews.completedAt, recCutoff)));
+    // Measured from the last activity on the record, not its creation, so a
+    // candidate still moving through a long-running role isn't purged mid-process.
     const purged = await db
       .delete(schema.candidates)
-      .where(and(eq(schema.candidates.orgId, org.id), lt(schema.candidates.createdAt, recordCutoff)))
+      .where(and(eq(schema.candidates.orgId, org.id), lt(schema.candidates.updatedAt, recordCutoff)))
       .returning({ id: schema.candidates.id });
-    if (purged.length) await audit({ orgId: org.id, action: "retention.purged_candidates", meta: { count: purged.length } });
+    // The company-wide CV library holds its own copy of every CV and must expire too.
+    const purgedCvs = await db
+      .delete(schema.cvDocuments)
+      .where(and(eq(schema.cvDocuments.orgId, org.id), lt(schema.cvDocuments.updatedAt, recordCutoff)))
+      .returning({ id: schema.cvDocuments.id });
+    if (purged.length || purgedCvs.length) {
+      await audit({ orgId: org.id, action: "retention.purged_candidates", meta: { count: purged.length, cvLibrary: purgedCvs.length } });
+    }
   }
+}
+
+/**
+ * DPDP erasure request: deletes this candidate and every other copy of their
+ * CV the workspace holds — the company-wide library entry and their
+ * applications to other roles, matched by library link or email. Otherwise a
+ * "deleted" person could be pulled straight back in by "Scan CV library".
+ * Returns the positions that need re-ranking.
+ */
+export async function eraseCandidateData(orgId: string, candidateId: string): Promise<string[]> {
+  const c = await getCandidate(candidateId);
+  if (!c || c.orgId !== orgId) return [];
+  const email = normEmail(c.email);
+  const docIds = new Set<string>();
+  if (c.cvDocumentId) docIds.add(c.cvDocumentId);
+  if (email) {
+    const docs = await db
+      .select({ id: schema.cvDocuments.id })
+      .from(schema.cvDocuments)
+      .where(and(eq(schema.cvDocuments.orgId, orgId), eq(schema.cvDocuments.email, email)));
+    for (const d of docs) docIds.add(d.id);
+  }
+  const matches = [eq(schema.candidates.id, c.id)];
+  if (email) matches.push(dsql`lower(${schema.candidates.email}) = ${email}`);
+  if (docIds.size) matches.push(inArray(schema.candidates.cvDocumentId, [...docIds]));
+  const removed = await db
+    .delete(schema.candidates)
+    .where(and(eq(schema.candidates.orgId, orgId), or(...matches)))
+    .returning({ positionId: schema.candidates.positionId });
+  if (docIds.size) await db.delete(schema.cvDocuments).where(and(eq(schema.cvDocuments.orgId, orgId), inArray(schema.cvDocuments.id, [...docIds])));
+  return [...new Set(removed.map((r) => r.positionId))];
 }

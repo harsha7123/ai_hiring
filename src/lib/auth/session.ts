@@ -1,13 +1,34 @@
 import "server-only";
 import { headers } from "next/headers";
 import { desc, eq, and, isNull, gt } from "drizzle-orm";
-import type { User as SupabaseUser } from "@supabase/supabase-js";
 import { db, schema } from "@/db";
+import { sha256 } from "@/lib/crypto";
 import { supabaseServer } from "@/lib/supabase/server";
 
 export async function clientIp(): Promise<string | null> {
   const h = await headers();
   return h.get("x-forwarded-for")?.split(",")[0]?.trim() || h.get("x-real-ip") || null;
+}
+
+export type AuthUser = { id: string; email: string; name: string };
+
+/**
+ * The signed-in user, from a cryptographically verified JWT. getClaims()
+ * checks the token's signature (locally against the project's JWKS for
+ * asymmetric signing keys, or via the Auth server for legacy symmetric ones),
+ * unlike getSession(), which trusts whatever the cookie says. That matters
+ * because not every route goes through the proxy — /api/* route handlers
+ * read the cookie directly, so this check is the only thing standing between
+ * a forged cookie and tenant data.
+ */
+export async function verifiedUser(): Promise<AuthUser | null> {
+  const supabase = await supabaseServer();
+  const { data, error } = await supabase.auth.getClaims();
+  const claims = data?.claims;
+  if (error || !claims?.sub || typeof claims.email !== "string" || !claims.email) return null;
+  const meta = (claims.user_metadata ?? {}) as { name?: unknown };
+  const name = (typeof meta.name === "string" && meta.name.trim()) || claims.email.split("@")[0];
+  return { id: claims.sub, email: claims.email.toLowerCase(), name };
 }
 
 /**
@@ -16,42 +37,48 @@ export async function clientIp(): Promise<string | null> {
  * load — that can only happen if a Supabase account was deleted and recreated with
  * the same address, which needs a person to untangle, not a silent auto-merge.
  */
-async function ensureUserProfile(user: SupabaseUser) {
-  const name = (user.user_metadata?.name as string | undefined)?.trim() || user.email?.split("@")[0] || "User";
+export async function ensureUserProfile(user: AuthUser) {
   try {
     await db
       .insert(schema.users)
-      .values({ id: user.id, email: user.email!, name, lastLoginAt: new Date() })
-      .onConflictDoUpdate({ target: schema.users.id, set: { email: user.email!, lastLoginAt: new Date() } });
+      .values({ id: user.id, email: user.email, name: user.name, lastLoginAt: new Date() })
+      .onConflictDoUpdate({ target: schema.users.id, set: { email: user.email, lastLoginAt: new Date() } });
   } catch (err) {
     console.error(`profile sync failed for ${user.id} <${user.email}>:`, err instanceof Error ? err.message : err);
   }
 }
 
 /**
- * Any invite sent to this email, created before or after they signed up, is
- * attached the first time they're seen signed in with a matching address.
+ * Accepts a team invite for a signed-in user. Requires both the invite token
+ * (proof the person was actually sent the link) and a verified session for the
+ * invited email. Matching on email alone is not enough: with email
+ * confirmation turned off in Supabase, anyone can create an account for any
+ * address, so an email match proves nothing about who is holding it.
  */
-async function consumePendingInvites(userId: string, email: string) {
-  const pending = await db
+export async function acceptInviteForUser(token: string, user: AuthUser): Promise<{ orgId: string } | { error: string }> {
+  const [invite] = await db
     .select()
     .from(schema.invites)
-    .where(and(eq(schema.invites.email, email), isNull(schema.invites.acceptedAt), gt(schema.invites.expiresAt, new Date())));
-  for (const invite of pending) {
-    await db.insert(schema.memberships).values({ userId, orgId: invite.orgId, role: invite.role }).onConflictDoNothing();
-    await db.update(schema.invites).set({ acceptedAt: new Date() }).where(eq(schema.invites.id, invite.id));
+    .where(and(eq(schema.invites.tokenHash, sha256(token)), isNull(schema.invites.acceptedAt), gt(schema.invites.expiresAt, new Date())));
+  if (!invite) return { error: "This invitation is invalid, already used, or has expired." };
+  if (invite.email.toLowerCase() !== user.email) {
+    return { error: `This invitation is for ${invite.email}, but you're signed in as ${user.email}.` };
   }
+  await ensureUserProfile(user);
+  await db.insert(schema.memberships).values({ userId: user.id, orgId: invite.orgId, role: invite.role }).onConflictDoNothing();
+  await db.update(schema.invites).set({ acceptedAt: new Date() }).where(eq(schema.invites.id, invite.id));
+  await switchSessionOrg(user.id, invite.orgId);
+  return { orgId: invite.orgId };
 }
 
 /**
- * ensureUserProfile/consumePendingInvites only ever do something the first
- * time a user is seen, or when someone invites them later — not on every one
- * of the dozens of page loads and actions a session makes per minute. This
- * process stays warm between requests (unlike a cold-start serverless
- * function), so a small in-memory "checked recently" cache is enough to skip
- * both on every request but the first in a window, without a database read.
- * Worst case (a fresh deploy, or the TTL elapsing) it just runs again — never
- * unsafe, purely a latency optimization.
+ * ensureUserProfile only does something the first time a user is seen — not on
+ * every one of the dozens of page loads and actions a session makes per minute.
+ * This process stays warm between requests (unlike a cold-start serverless
+ * function), so a small in-memory "checked recently" cache is enough to skip it
+ * on every request but the first in a window, without a database read. Worst
+ * case (a fresh deploy, or the TTL elapsing) it just runs again — never unsafe,
+ * purely a latency optimization.
  */
 const recentlyChecked = new Map<string, number>();
 const CHECK_TTL_MS = 3 * 60_000;
@@ -70,20 +97,10 @@ function shouldRecheck(userId: string): boolean {
 }
 
 export async function readSession() {
-  const supabase = await supabaseServer();
-  // getSession() reads and verifies the local JWT without a network round-trip
-  // to Supabase's Auth server. That's normally a risk (a stale/revoked session
-  // could pass), but every request under /app/* already went through the proxy
-  // middleware, which just called the network-verifying getUser() for this
-  // exact request and refreshed the cookie — re-verifying again here a moment
-  // later would be a second network call for no additional safety.
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  const user = session?.user;
-  if (!user?.email) return null;
+  const user = await verifiedUser();
+  if (!user) return null;
 
-  const loadMemberships = () =>
+  const [memberships, [pref]] = await Promise.all([
     db
       .select({
         role: schema.memberships.role,
@@ -92,31 +109,16 @@ export async function readSession() {
       .from(schema.memberships)
       .innerJoin(schema.organizations, eq(schema.organizations.id, schema.memberships.orgId))
       .where(eq(schema.memberships.userId, user.id))
-      .orderBy(desc(schema.memberships.createdAt));
-
-  const [membershipsResult, [pref]] = await Promise.all([
-    loadMemberships(),
+      .orderBy(desc(schema.memberships.createdAt)),
     db.select().from(schema.activeOrgPrefs).where(eq(schema.activeOrgPrefs.userId, user.id)),
   ]);
-  let memberships = membershipsResult;
 
-  // Always run this for a not-yet-a-member user (a just-sent invite needs to attach
-  // right away), but otherwise only once per TTL — ensureUserProfile/consumePendingInvites
-  // are a no-op for the overwhelming majority of a settled user's page loads.
-  if (!memberships.length || shouldRecheck(user.id)) {
-    await ensureUserProfile(user);
-    await consumePendingInvites(user.id, user.email);
-    if (!memberships.length) memberships = await loadMemberships();
-  }
+  if (shouldRecheck(user.id)) await ensureUserProfile(user);
   if (!memberships.length) return null;
 
   const active = memberships.find((m) => m.org.id === pref?.orgId) ?? memberships[0];
 
-  return {
-    user: { id: user.id, email: user.email, name: (user.user_metadata?.name as string | undefined) || user.email.split("@")[0] },
-    org: active.org,
-    role: active.role,
-  };
+  return { user, org: active.org, role: active.role };
 }
 
 export async function destroySession() {

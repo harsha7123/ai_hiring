@@ -3,21 +3,28 @@ import Link from "next/link";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import { db, schema } from "@/db";
 import { sha256 } from "@/lib/crypto";
+import { verifiedUser } from "@/lib/auth/session";
 import { ActionForm, SubmitButton } from "@/components/client";
 import { Field, Input, Notice } from "@/components/ui";
-import { joinInvite } from "../../actions";
+import { acceptInvite, joinInvite, logout } from "../../actions";
 
 export const metadata: Metadata = { title: "Join workspace" };
 
 export default async function InvitePage({ params }: PageProps<"/invite/[token]">) {
   const { token } = await params;
-  const [row] = await db
-    .select({ invite: schema.invites, orgName: schema.organizations.name })
-    .from(schema.invites)
-    .innerJoin(schema.organizations, eq(schema.organizations.id, schema.invites.orgId))
-    .where(and(eq(schema.invites.tokenHash, sha256(token)), isNull(schema.invites.acceptedAt), gt(schema.invites.expiresAt, new Date())));
+  const [row] = /^[A-Za-z0-9_-]{20,64}$/.test(token)
+    ? await db
+        .select({ invite: schema.invites, orgName: schema.organizations.name })
+        .from(schema.invites)
+        .innerJoin(schema.organizations, eq(schema.organizations.id, schema.invites.orgId))
+        .where(and(eq(schema.invites.tokenHash, sha256(token)), isNull(schema.invites.acceptedAt), gt(schema.invites.expiresAt, new Date())))
+    : [];
   if (!row) return <Notice tone="bad">This invitation is invalid, already used, or has expired.</Notice>;
-  const [existing] = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.email, row.invite.email));
+  const invitedEmail = row.invite.email.toLowerCase();
+  const [user, [existing]] = await Promise.all([
+    verifiedUser(),
+    db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.email, invitedEmail)),
+  ]);
 
   return (
     <>
@@ -25,14 +32,30 @@ export default async function InvitePage({ params }: PageProps<"/invite/[token]"
       <p className="mt-1.5 text-sm text-ink-2">
         You were invited as <span className="font-medium text-ink">{row.invite.role}</span> ({row.invite.email}).
       </p>
-      {existing ? (
+      {user && user.email === invitedEmail ? (
+        <ActionForm action={acceptInvite} className="mt-8">
+          <input type="hidden" name="token" value={token} />
+          <SubmitButton className="w-full">Join {row.orgName}</SubmitButton>
+        </ActionForm>
+      ) : user ? (
+        <div className="mt-8 space-y-4">
+          <Notice tone="warn">
+            You&apos;re signed in as {user.email}. Sign out, then sign in as {row.invite.email} to accept this invitation.
+          </Notice>
+          <form action={logout}>
+            <SubmitButton variant="secondary" className="w-full">
+              Sign out
+            </SubmitButton>
+          </form>
+        </div>
+      ) : existing ? (
         <div className="mt-8">
           <Notice tone="info">
             You already have an account with this email.{" "}
-            <Link href="/login" className="font-medium underline underline-offset-4">
+            <Link href={`/login?next=${encodeURIComponent(`/invite/${token}`)}`} className="font-medium underline underline-offset-4">
               Sign in
             </Link>{" "}
-            and you&apos;ll be added to {row.orgName} automatically.
+            and you&apos;ll come back here to join {row.orgName}.
           </Notice>
         </div>
       ) : (

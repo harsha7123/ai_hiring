@@ -8,7 +8,7 @@ import { can, requirePage } from "@/lib/auth/guard";
 import { ActionForm, AutoRefresh, PrintButton, SubmitButton } from "@/components/client";
 import { Badge, Card, CardHeader, Notice, PageHeader, Textarea, buttonClass, cx, td, th } from "@/components/ui";
 import { INTERVIEW, RECOMMENDATION, STAGE, fmtDate } from "@/lib/labels";
-import { deleteCandidate, promoteCandidate, rejectCandidate, submitTranscript } from "../../../../actions";
+import { deleteCandidate, promoteCandidate, rejectCandidate, resetInterview, submitTranscript } from "../../../../actions";
 import { loadPosition } from "../../data";
 
 export const metadata: Metadata = { title: "Candidate report" };
@@ -97,6 +97,15 @@ export default async function CandidatePage({ params }: PageProps<"/app/position
               <span className="text-sm text-ink-3">Recommendation · decision remains with your panel</span>
             </div>
             <p className="mt-4 text-[15px] leading-relaxed text-ink">{r.summary}</p>
+            {iv?.transcriptSource === "browser" && (
+              <div className="mt-4">
+                <Notice tone="warn">
+                  Unverified transcript: this interview was scored from the transcript the candidate&apos;s own browser sent, because the voice
+                  provider&apos;s record hasn&apos;t arrived. Listen to the recording, if there is one, before relying on this report. It is re-scored
+                  automatically if the provider&apos;s record arrives.
+                </Notice>
+              </div>
+            )}
           </Card>
         ) : (
           <Notice tone="info">
@@ -237,6 +246,15 @@ export default async function CandidatePage({ params }: PageProps<"/app/position
               </p>
             )}
             {iv?.lastError && <Notice tone="warn">{iv.lastError}</Notice>}
+            {editable && iv && ["queued", "failed", "no_answer"].includes(iv.status) && iv.attempts > iv.attemptsAtReset && ["consented", "unreachable", "invited", "selected"].includes(c.stage) && (
+              <form action={resetInterview} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-line p-4">
+                <p className="text-sm text-ink-2">Give this candidate a fresh set of interview attempts (for example after connection problems or missed calls).</p>
+                <input type="hidden" name="candidateId" value={c.id} />
+                <SubmitButton variant="secondary" size="sm">
+                  Reset interview attempts
+                </SubmitButton>
+              </form>
+            )}
             {iv?.questions && (
               <div>
                 <h3 className="text-sm font-medium">Planned questions (generated for this candidate)</h3>
@@ -294,7 +312,11 @@ export default async function CandidatePage({ params }: PageProps<"/app/position
         {can(ctx.role, "admin") && (
           <form action={deleteCandidate} className="no-print border-t border-line pt-6">
             <input type="hidden" name="candidateId" value={c.id} />
-            <SubmitButton variant="danger" size="sm" confirm="Delete this candidate's CV, transcript, recording link and all scores? Use this for data-deletion requests. This cannot be undone.">
+            <SubmitButton
+              variant="danger"
+              size="sm"
+              confirm="Delete all of this person's data: this application, their copy in the company CV library, and their applications to other roles (CVs, transcripts, recording links and scores)? Use this for data-deletion requests. This cannot be undone."
+            >
               Delete candidate data
             </SubmitButton>
           </form>

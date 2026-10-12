@@ -10,7 +10,8 @@ import { audit } from "@/lib/audit";
 import { AuthError, requireAction, type Ctx } from "@/lib/auth/guard";
 import { randomToken, sha256 } from "@/lib/crypto";
 import { enqueue } from "@/lib/jobs/queue";
-import { matchPoolToPosition, queueScoringForPosition, rerankPosition, selectCandidate, selectForInterview } from "@/lib/pipeline";
+import { eraseCandidateData, matchPoolToPosition, queueScoringForPosition, rerankPosition, selectCandidate, selectForInterview } from "@/lib/pipeline";
+import { autoProvisionVoiceAgent } from "@/lib/omnidim";
 import type { FormState } from "@/components/client";
 
 const appUrl = () => (process.env.APP_URL || "http://localhost:3000").replace(/\/$/, "");
@@ -160,7 +161,7 @@ export const savePositionConfig = guarded(async (fd) => {
   if (requestedMode !== "in_browser" && requestedMode !== "phone_call") return { error: "Invalid interview mode." };
   if (requestedMode === "phone_call") {
     const [org] = await db.select({ omnidimFromNumberId: schema.organizations.omnidimFromNumberId }).from(schema.organizations).where(eq(schema.organizations.id, ctx.org.id));
-    if (!org.omnidimFromNumberId) return { error: "Add your OmniDimension phone number ID in Settings → Voice interviews before using phone-call interviews." };
+    if (!org.omnidimFromNumberId) return { error: "Phone-call interviews need an OmniDimension phone number, which is set on the server (OMNIDIM_FROM_NUMBER_ID). Ask whoever manages the server to add it." };
   }
   await db
     .update(schema.positions)
@@ -248,7 +249,15 @@ export async function retryFailed(fd: FormData) {
 export async function promoteCandidate(fd: FormData) {
   const ctx = await requireAction("recruiter");
   const c = await ownCandidate(ctx, String(fd.get("candidateId")));
-  if (["parsed", "scored", "filtered_out", "rejected"].includes(c.stage) && c.cvText) {
+  if (c.stage === "rejected" && c.interviewScore != null) {
+    // Already interviewed and scored before being rejected: put them back into
+    // the ranking rather than sending them an interview they've already done.
+    await db
+      .update(schema.candidates)
+      .set({ promoted: true, stage: "interviewed", stageReason: "Promoted by recruiter" })
+      .where(eq(schema.candidates.id, c.id));
+    await rerankPosition(c.positionId);
+  } else if (["parsed", "scored", "filtered_out", "rejected"].includes(c.stage) && c.cvText) {
     await db.update(schema.candidates).set({ promoted: true, stageReason: "Promoted by recruiter" }).where(eq(schema.candidates.id, c.id));
     await selectCandidate(c.id, ctx.org.id, c.positionId);
   } else if (c.stage === "reserve") {
@@ -288,6 +297,29 @@ export async function resendInvite(fd: FormData) {
   refresh();
 }
 
+/**
+ * Gives a candidate a fresh set of interview tries after they hit the
+ * per-candidate limit (browser restarts or missed calls) or their session
+ * failed. The role's spend cap still counts every past session.
+ */
+export async function resetInterview(fd: FormData) {
+  const ctx = await requireAction("recruiter");
+  const c = await ownCandidate(ctx, String(fd.get("candidateId")));
+  const [iv] = await db.select().from(schema.interviews).where(eq(schema.interviews.candidateId, c.id));
+  if (!iv || iv.status === "completed" || iv.status === "dispatched") return;
+  if (!["consented", "unreachable", "invited", "selected"].includes(c.stage)) return;
+  await db
+    .update(schema.interviews)
+    .set({ status: "queued", attemptsAtReset: iv.attempts, nextAttemptAt: c.consentAt ? new Date() : null, lastError: null })
+    .where(eq(schema.interviews.id, iv.id));
+  await db
+    .update(schema.candidates)
+    .set({ stage: c.consentAt ? "consented" : "invited", stageReason: null, inviteToken: c.inviteToken ?? randomToken(24) })
+    .where(eq(schema.candidates.id, c.id));
+  await audit({ orgId: ctx.org.id, userId: ctx.user.id, action: "interview.reset", target: c.id });
+  refresh();
+}
+
 /** Record a human-run or externally-run interview so it flows through the same scoring. */
 export const submitTranscript = guarded(async (fd) => {
   const ctx = await requireAction("recruiter");
@@ -298,7 +330,7 @@ export const submitTranscript = guarded(async (fd) => {
   if (!iv) return { error: "Select this candidate for interview first." };
   await db
     .update(schema.interviews)
-    .set({ status: "completed", transcript: transcript.slice(0, 100_000), completedAt: new Date(), lastError: null })
+    .set({ status: "completed", transcript: transcript.slice(0, 100_000), transcriptSource: "manual", completedAt: new Date(), lastError: null })
     .where(eq(schema.interviews.id, iv.id));
   await enqueue("assess_interview", { interviewId: iv.id }, { orgId: ctx.org.id });
   await audit({ orgId: ctx.org.id, userId: ctx.user.id, action: "interview.transcript_submitted", target: c.id });
@@ -306,13 +338,17 @@ export const submitTranscript = guarded(async (fd) => {
   return { ok: "Transcript saved. The report is being generated." };
 });
 
-/** DPDP deletion request: removes CV, transcript, recording link and derived scores. */
+/**
+ * DPDP deletion request: removes the CV, transcript, recording link and derived
+ * scores — for this application, the company CV library copy, and the same
+ * person's applications to other roles (see eraseCandidateData).
+ */
 export async function deleteCandidate(fd: FormData) {
   const ctx = await requireAction("admin");
   const c = await ownCandidate(ctx, String(fd.get("candidateId")));
-  await db.delete(schema.candidates).where(eq(schema.candidates.id, c.id));
-  await rerankPosition(c.positionId);
-  await audit({ orgId: ctx.org.id, userId: ctx.user.id, action: "candidate.deleted", target: c.id });
+  const positions = await eraseCandidateData(ctx.org.id, c.id);
+  for (const positionId of positions) await rerankPosition(positionId);
+  await audit({ orgId: ctx.org.id, userId: ctx.user.id, action: "candidate.deleted", target: c.id, meta: { applicationsRemoved: positions.length } });
   redirect(`/app/positions/${c.positionId}?tab=candidates`);
 }
 
@@ -347,6 +383,21 @@ export const updateOrg = guarded(async (fd) => {
 // Voice interview configuration (OmniDimension key, agent, phone number) is
 // server-only now — see autoProvisionVoiceAgent / ensureVoiceAgentsProvisioned
 // in lib/omnidim.ts. There is deliberately no admin-facing form for it.
+
+/**
+ * Rotates the secret in this workspace's webhook URL (e.g. after it leaked in
+ * a log). The OmniDimension agent has the old URL baked in, so a fresh agent is
+ * provisioned with the new one; the old URL stops working immediately.
+ */
+export const rotateWebhookSecret = guarded(async () => {
+  const ctx = await requireAction("owner");
+  const webhookSecret = randomToken(24);
+  await db.update(schema.organizations).set({ webhookSecret, omnidimAgentId: null }).where(eq(schema.organizations.id, ctx.org.id));
+  await autoProvisionVoiceAgent({ id: ctx.org.id, name: ctx.org.name, webhookSecret });
+  await audit({ orgId: ctx.org.id, userId: ctx.user.id, action: "org.webhook_secret_rotated" });
+  refresh();
+  return { ok: "Webhook secret rotated. A new interview agent is being set up with the new address." };
+});
 
 // ---------- Team ----------
 
