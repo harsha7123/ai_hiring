@@ -35,9 +35,11 @@ export function configProblems(env: NodeJS.ProcessEnv = process.env): { errors: 
 
 export function checkConfigOrExit() {
   const { errors, warnings } = configProblems();
-  for (const w of warnings) log.warn("config", { problem: w });
+  // The problem goes in the message itself: log viewers such as Railway's show
+  // only the message column, and an unexplained "config" line helps nobody.
+  for (const w of warnings) log.warn(`Config warning: ${w}`, { problem: w });
   if (!errors.length) return;
-  for (const e of errors) log.error("config", { problem: e });
+  for (const e of errors) log.error(`Config ERROR: ${e}`, { problem: e });
   if (process.env.NODE_ENV === "production") {
     log.error("Refusing to start with invalid configuration; fix the variables above.");
     process.exit(1);
